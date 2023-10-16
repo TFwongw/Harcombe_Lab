@@ -22,11 +22,11 @@ from time import time
 from itertools import chain 
 
 no_monoculture=2
-n_processor = 30 # number of process run in parallel
 initial_pop = 1e-8 # initial biomass in comets simulation
 n_combos = 50 # first n gene combo 
 genes = ('folA','folP')
 alphas = [[1,2],[3,4],[5,6]]
+n_processor = 26 # number of process run in parallel
 
 os.environ["GUROBI_COMETS_HOME"] = os.environ["GUROBI_HOME"] # Gurobi path  
 
@@ -128,7 +128,15 @@ def iter_species(models,f,*args,**kwargs):
 
 alpha_table = pd.read_csv('./Data/alpha_table.csv', index_col='Gene_inhibition')
 
-def get_alphas_from_tab(model, genes: list):
+def get_alpha_steps(SG):
+    result_df = pd.DataFrame([])
+    for scaling in np.arange(0.2,2,0.2):
+        temp_df = alpha_table.loc[[SG]]*scaling
+        temp_df.index = temp_df.index + f'_{round(scaling,3)}'
+        result_df = pd.concat([result_df, temp_df])
+    return result_df
+
+def get_alphas_from_tab(model, genes: list, alpha_table = alpha_table):
     genes = convert_arg_to_list(genes)
     alphas = [alpha_table[model.id][gene] for gene in genes]
     return alphas 
@@ -212,7 +220,7 @@ def extract_dfs(mono_sims, co_sim):
     out_dict = {k: v.to_json() for k,v in out_dict.items()}
     return out_dict
 
-def get_BM_df(genes,n_dir=''):
+def get_BM_df(genes,n_dir='',alpha_table=alpha_table,mono=True):
     print(genes)
     base = f"/panfs/jay/groups/0/harcombe/wong0755/comets_RPS/rep_{n_dir}/"
     if not os.path.exists(base):
@@ -220,7 +228,7 @@ def get_BM_df(genes,n_dir=''):
     with E0 as m_E0, S0 as m_S0:
         M0 = [m_E0, m_S0] 
         if not ('Normal' in genes):
-            alphas = iter_species(M0, get_alphas_from_tab, genes=genes)
+            alphas = iter_species(M0, get_alphas_from_tab, genes=genes, alpha_table=alpha_table)
             zip_arg = zip(M0, alphas)
             iter_species(zip_arg, alter_Sij,genes=genes)
     
@@ -229,16 +237,19 @@ def get_BM_df(genes,n_dir=''):
         co_layout, *mono_layout = create_layout_object(E_model, S_model)
         zip_arg = zip([E_model, S_model, S_model], mono_layout[:no_monoculture]) 
         
-        mono_output = iter_species(zip_arg, sim_cultures, base=base)
-        mono_df, mono_sim = unpack_output_object(mono_output) 
         co_df, co_sim = sim_cultures([E_model, S_model], co_layout, base=base)
         full_df = co_df.add_suffix(f'_{genes}_coculture')
-        for new_df in mono_df:
-            full_df = pd.concat([full_df, new_df.add_suffix(f'_{genes}_monoculture')],axis=1)
-
-        out_dict = extract_dfs(mono_sim, co_sim)
+        if mono:
+            mono_output = iter_species(zip_arg, sim_cultures, base=base)
+            mono_df, mono_sim = unpack_output_object(mono_output) 
+            for new_df in mono_df:
+                full_df = pd.concat([full_df, new_df.add_suffix(f'_{genes}_monoculture')],axis=1)
+            out_dict = extract_dfs(mono_sim, co_sim)
+        else:
+            out_dict = extract_dfs(None, co_sim)
+            
+        out_dict.update( {'Gene_inhibition': '.'.join(genes)}) # for DG
     return full_df, out_dict   
-#     return(full_df) 
 
 def rename_columns(df):
     df.columns = [re.sub('S0_','S0.', ele) for ele in df] # S0_ac -> S0.ac
@@ -247,8 +258,22 @@ def rename_columns(df):
            for ele in df.columns]
     return(df.columns)
     
+def gene_index_culture_col_df(analysis_df): 
+    analysis_df['Gene_inhibition'] =  ['.'.join(map(str, l)) for l in analysis_df.Gene_inhibition]
+    analysis_df = analysis_df.set_index('Gene_inhibition')
+    return analysis_df
+
+# def partial_get_BM_df(*args):
+#     return get_BM_df(*args, alpha_table=alpha_table_steps,mono=False)
+
+# def test_dadX(gene_combos: list, filename: str, function_get_BM_df=partial_get_BM_df): # switched to specific step alpha stable then pass to multiprocessing
+#     return generate_csv(gene_combos, filename, function_get_BM_df=function_get_BM_df)
+
 def generate_csv(gene_combos: list, filename: str):
-    zipped_arg = [[ele, i%n_processor] for i, ele in enumerate(gene_combos)]
+    zipped_arg = [[ele, i%n_processor] for i, ele in enumerate(gene_combos)] 
+    # test this
+    # zipped_arg = [[ele, i%n_processor, alpha_table_steps, False] for i, ele in enumerate(gene_combos)] # also zip alpha_table, 'monoculture' to pass to get_BM_df for discrete concentration 
+
 
     # Multiprocessing double gene
     with multiprocessing.Pool(n_processor) as pool:
@@ -257,25 +282,13 @@ def generate_csv(gene_combos: list, filename: str):
     result_df.columns = rename_columns(result_df)
     result_df.to_csv(f'./Data/{filename}.csv')
     
-    analysis_df = pd.DataFrame(result_dict_list)
-    analysis_df.to_json(f"./Data/flanalysis.json")
-#     with open(f"./Data/flanalysis_{filename}.json", "w") as outfile:
-#         outfile.write(analysis_df.to_json())
+    analysis_df = gene_index_culture_col_df(pd.DataFrame(result_dict_list))
+    analysis_df.to_json(f"./Data/flanalysis_{filename}.json") 
 
-    return result_df, analysis_df
+    return result_df, analysis_df 
 
-# load json
-# analysis_df = pd.read_json('./Data/flanalysis.json')
-# pd.read_json(analysis_df.coculture_media[0]).query("metabolite =='lcts_e'")
-# # .plot(x='cycle', y=['conc_mmol'])
-# analysis_df.plot(x='cycle', y = ['ACtex','EX_ac_e'])
-
-
+    
 # # Run
-
-# In[ ]:
-
-
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG, filename="logfile", filemode="a+",
                         format="%(asctime)-15s %(levelname)-8s %(message)s")
@@ -287,8 +300,8 @@ if __name__ == "__main__":
     gene_combos = list(ast.literal_eval(ele) for ele in gene_combos)
     gene50 = list(alpha_table.index)
     gene50.extend(['Normal'])
-    _ = generate_csv(gene50, 'BM_SG') 
-    _ =  generate_csv(gene_combos, 'BM_DG') 
+    _ = generate_csv(gene50, 'BM_SG1') 
+    _ =  generate_csv(gene_combos, 'BM_DG1') 
     end = time() 
     print('Time Elapsed: ', end-start)
 
