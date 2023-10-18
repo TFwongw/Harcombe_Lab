@@ -96,7 +96,6 @@ def sim_cultures(model, layout, p=p, base = None, genes=''): # non_functional ar
     sim.working_dir = base
     try:
         sim.run()
-        sim.total_biomass.rename(columns={'S0_ac':'S0.ac'},inplace=True)
         # if modify_bool==True:
         #     sim.total_biomass.rename(columns={'S0.ac':'S0.glc'},inplace=True)
     except:
@@ -104,10 +103,13 @@ def sim_cultures(model, layout, p=p, base = None, genes=''): # non_functional ar
         print(f"{sim.run_output}")
     return sim.total_biomass.set_index('cycle'), sim
 
+
 def convert_arg_to_list(arg):
-    if type(arg) is not list and type(arg) is not tuple:
-        arg = [arg]
-    return(arg)
+    if type(arg) in [pd.Series, pd.Index]:
+        arg = list(arg) 
+    elif type(arg) not in [list, tuple, set]:
+        arg = [arg] # differ from list(arg) -> conversion of str
+    return arg
 
 def create_c(model, initial_pop=initial_pop):
     model = c.model(model)
@@ -128,9 +130,9 @@ def iter_species(models,f,*args,**kwargs):
 
 alpha_table = pd.read_csv('./Data/alpha_table.csv', index_col='Gene_inhibition')
 
-def get_alpha_steps(SG):
+def get_alpha_steps(SG, steps=np.arange(0.2,2,0.2)):
     result_df = pd.DataFrame([])
-    for scaling in np.arange(0.2,2,0.2):
+    for scaling in steps:
         temp_df = alpha_table.loc[[SG]]*scaling
         temp_df.index = temp_df.index + f'_{round(scaling,3)}'
         result_df = pd.concat([result_df, temp_df])
@@ -181,7 +183,7 @@ def alter_Sij(model, alphas = 1, genes = 'folA'):
     genes_sorted = sorted(genes_dict.items(), key=lambda x:x[1], reverse=True) #sort by magnitude of alpha
     rct_ids = list() # store list of id of reaction and reaction_v1 that regulated by the same gene 
     for current_gene, alpha in genes_sorted:
-#         print(current_gene,alpha)
+        current_gene = current_gene.split('_')[0] # for step_alpha
         for rct in model.genes.get_by_id(get_gene_id(model, current_gene)).reactions: 
             if (rct.id not in rct_ids):
 #                 print(current_gene, alpha)
@@ -215,8 +217,9 @@ def extract_dfs_from_sim_object(sim_object):
 # unpack_output_object
 def extract_dfs(mono_sims, co_sim):
     out_dict = extract_dfs_from_sim_object(co_sim)
-    for sim_object in mono_sims[0]:
-        out_dict.update(extract_dfs_from_sim_object(sim_object))
+    if mono_sims:
+        for sim_object in mono_sims[0]:
+            out_dict.update(extract_dfs_from_sim_object(sim_object))
     out_dict = {k: v.to_json() for k,v in out_dict.items()}
     return out_dict
 
