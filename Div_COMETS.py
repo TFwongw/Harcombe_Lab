@@ -36,14 +36,14 @@ S0 = cobra.io.read_sbml_model("./models/STM_v1_0_S0.xml")
 p = c.params()
 p.set_param("defaultKm", 0.00001) # M 
 p.set_param("defaultVmax", 10) #mmol/gDw/hr
-p.set_param("maxCycles", 350)
+p.set_param("maxCycles", 450)
 # p.set_param("maxCycles", 20)
 p.set_param("timeStep", 1) 
 p.set_param('writeFluxLog', True)
 p.set_param('writeMediaLog', True)
 
 E0.id = 'E0'
-S0.id = 'S0_ac'
+S0.id = 'S0.ac'
 # FVA_bounds = pd.read_csv('./Data/FVA_bounds_full.csv', index_col= 0)
  
 # # function for iterate 3 species
@@ -129,6 +129,7 @@ def iter_species(models,f,*args,**kwargs):
     return(r_object) 
 
 alpha_table = pd.read_csv('./Data/alpha_table.csv', index_col='Gene_inhibition')
+alpha_table.columns = ['E0', 'S0.ac', 'S0.glc']
 
 def get_alpha_steps(SG, steps=np.arange(0.2,2,0.2)):
     result_df = pd.DataFrame([])
@@ -203,7 +204,7 @@ def unpack_output_object(output):
 # df, sim_object = unpack_output_object(mono_output)
 
 def extract_dfs_from_sim_object(sim_object):
-    species_name = [ele.replace('.','_') for ele in sim_object.total_biomass.columns[1:]]
+    species_name = [ele for ele in sim_object.total_biomass.columns[1:]]
     if len(species_name)>1:
         culture = 'coculture' 
         out_dict = {f'{culture}_media' : sim_object.media}
@@ -223,7 +224,8 @@ def extract_dfs(mono_sims, co_sim):
     out_dict = {k: v.to_json() for k,v in out_dict.items()}
     return out_dict
 
-def get_BM_df(genes,n_dir='',alpha_table=alpha_table,mono=True):
+def get_BM_df(genes,n_dir='',alpha_table=alpha_table,mono=True, E0=E0, S0=S0):
+    genes=convert_arg_to_list(genes)
     print(genes)
     base = f"/panfs/jay/groups/0/harcombe/wong0755/comets_RPS/rep_{n_dir}/"
     if not os.path.exists(base):
@@ -266,17 +268,8 @@ def gene_index_culture_col_df(analysis_df):
     analysis_df = analysis_df.set_index('Gene_inhibition')
     return analysis_df
 
-# def partial_get_BM_df(*args):
-#     return get_BM_df(*args, alpha_table=alpha_table_steps,mono=False)
-
-# def test_dadX(gene_combos: list, filename: str, function_get_BM_df=partial_get_BM_df): # switched to specific step alpha stable then pass to multiprocessing
-#     return generate_csv(gene_combos, filename, function_get_BM_df=function_get_BM_df)
-
-def generate_csv(gene_combos: list, filename: str):
-    zipped_arg = [[ele, i%n_processor] for i, ele in enumerate(gene_combos)] 
-    # test this
-    # zipped_arg = [[ele, i%n_processor, alpha_table_steps, False] for i, ele in enumerate(gene_combos)] # also zip alpha_table, 'monoculture' to pass to get_BM_df for discrete concentration 
-
+def generate_csv(gene_combos: list, filename: str, alpha_table=alpha_table, mono=True):
+    zipped_arg = [[ele, i%n_processor, alpha_table, mono] for i, ele in enumerate(convert_arg_to_list(gene_combos))] # also zip alpha_table, 'monoculture' to pass to get_BM_df for discrete concentration 
 
     # Multiprocessing double gene
     with multiprocessing.Pool(n_processor) as pool:
@@ -290,8 +283,12 @@ def generate_csv(gene_combos: list, filename: str):
 
     return result_df, analysis_df 
 
+# steps_thrB = get_alpha_steps('thrB', np.arange(0.2,1.2,0.2))
+
+# result_df, analysis_df = generate_csv(teps_thrB.index, 'ttest', steps_thrB, mono=False)
+
     
-# # Run
+# Run
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG, filename="logfile", filemode="a+",
                         format="%(asctime)-15s %(levelname)-8s %(message)s")
@@ -303,13 +300,16 @@ if __name__ == "__main__":
     gene_combos = list(ast.literal_eval(ele) for ele in gene_combos)
     gene50 = list(alpha_table.index)
     gene50.extend(['Normal'])
-    _ = generate_csv(gene50, 'BM_SG1') 
+    _ = generate_csv(gene50, 'BM_SG1')
     _ =  generate_csv(gene_combos, 'BM_DG1') 
+
+
     end = time() 
     print('Time Elapsed: ', end-start)
 
-
-# In[ ]:
+    # test    
+    # _ = generate_csv(gene_combos[:1], 't1') 
+    # _ = generate_csv(gene50[:1], 't2')
 
 
 # load json
