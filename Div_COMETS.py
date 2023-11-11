@@ -19,7 +19,7 @@ import ast
 import re
 import logging
 from time import time
-from itertools import chain 
+from itertools import chain  
 
 no_monoculture=2
 initial_pop = 1e-8 # initial biomass in comets simulation
@@ -28,7 +28,7 @@ genes = ('folA','folP')
 alphas = [[1,2],[3,4],[5,6]]
 n_processor = 26 # number of process run in parallel
 
-os.environ["GUROBI_COMETS_HOME"] = os.environ["GUROBI_HOME"] # Gurobi path  
+# os.environ["GUROBI_COMETS_HOME"] = os.environ["GUROBI_HOME"] # Gurobi path  
 
 E0 = cobra.io.read_sbml_model("./models/iML1515_E0.xml")
 S0 = cobra.io.read_sbml_model("./models/STM_v1_0_S0.xml")
@@ -36,14 +36,15 @@ S0 = cobra.io.read_sbml_model("./models/STM_v1_0_S0.xml")
 p = c.params()
 p.set_param("defaultKm", 0.00001) # M 
 p.set_param("defaultVmax", 10) #mmol/gDw/hr
-p.set_param("maxCycles", 450)
-# p.set_param("maxCycles", 20)
+# p.set_param("maxCycles", 450)
+p.set_param("maxCycles", 20)
 p.set_param("timeStep", 1) 
 p.set_param('writeFluxLog', True)
 p.set_param('writeMediaLog', True)
 
 E0.id = 'E0'
 S0.id = 'S0.ac'
+S0.id = 'S0'
 # FVA_bounds = pd.read_csv('./Data/FVA_bounds_full.csv', index_col= 0)
  
 # # function for iterate 3 species
@@ -129,9 +130,14 @@ def iter_species(models,f,*args,**kwargs):
     return(r_object) 
 
 alpha_table = pd.read_csv('./Data/alpha_table.csv', index_col='Gene_inhibition')
-alpha_table.columns = ['E0', 'S0.ac', 'S0.glc']
+# alpha_table = pd.read_csv('./Data/alpha_table_wgal.csv', index_col='Gene_inhibition')
 
-def get_alpha_steps(SG, steps=np.arange(0.2,2,0.2)):
+alpha_table.columns = ['E0', 'S0.ac', 'S0.glc']
+# alpha_table = pd.read_csv('./Data/checker_alpha_table.csv', index_col = 0)
+
+
+
+def get_alpha_steps(SG, steps=np.arange(0.2,2,0.2)): # No longer use -> UPDATE: supply alpha table instead of calculating here.
     result_df = pd.DataFrame([])
     for scaling in steps:
         temp_df = alpha_table.loc[[SG]]*scaling
@@ -224,7 +230,7 @@ def extract_dfs(mono_sims, co_sim):
     out_dict = {k: v.to_json() for k,v in out_dict.items()}
     return out_dict
 
-def get_BM_df(genes,n_dir='',alpha_table=alpha_table,mono=True, E0=E0, S0=S0):
+def get_BM_df(genes,n_dir='',alpha_table=alpha_table,mono=True, checker_suffix=None,E0=E0, S0=S0):
     genes=convert_arg_to_list(genes)
     print(genes)
     base = f"/panfs/jay/groups/0/harcombe/wong0755/comets_RPS/rep_{n_dir}/"
@@ -253,7 +259,14 @@ def get_BM_df(genes,n_dir='',alpha_table=alpha_table,mono=True, E0=E0, S0=S0):
         else:
             out_dict = extract_dfs(None, co_sim)
             
-        out_dict.update( {'Gene_inhibition': '.'.join(genes)}) # for DG
+        genes_str = '.'.join(genes)
+        
+        # adjust for checker board
+        if checker_suffix:
+            full_df = full_df.add_suffix(checker_suffix) # ((G1_lv, G2_lv)
+            genes_str = genes_str + checker_suffix
+        
+        out_dict.update( {'Gene_inhibition': genes_str}) # for DG
     return full_df, out_dict   
 
 def rename_columns(df):
@@ -264,7 +277,7 @@ def rename_columns(df):
     return(df.columns)
     
 def gene_index_culture_col_df(analysis_df): 
-    analysis_df['Gene_inhibition'] =  ['.'.join(map(str, l)) for l in analysis_df.Gene_inhibition]
+    # analysis_df['Gene_inhibition'] =  ['.'.join(map(str, l)) for l in analysis_df.Gene_inhibition]
     analysis_df = analysis_df.set_index('Gene_inhibition')
     return analysis_df
 
@@ -287,6 +300,27 @@ def generate_csv(gene_combos: list, filename: str, alpha_table=alpha_table, mono
 
 # result_df, analysis_df = generate_csv(teps_thrB.index, 'ttest', steps_thrB, mono=False)
 
+# def checkerboard_simulation(gene_combo: tuple, alpha_table, filename='BM_checkerboard', mono=True):
+#     def convert_checker_alpha_table_to_list(checker_alpha_table):
+#         l = list()
+#         for lv_pairs in checker_alpha_table.lv_pairs.unique():                                      
+#             l.append(checker_alpha_table.query('lv_pairs == @lv_pairs'))
+#         return l
+    
+#     sub_alpha_list = convert_checker_alpha_table_to_list(alpha_table)[:1]
+    
+#     zipped_arg = [[('folP', 'folA'), i%n_processor, sub_alpha_df, mono, '_'+str(i)] for i, sub_alpha_df in enumerate(sub_alpha_list)] # also zip alpha_table, 'monoculture' to pass to get_BM_df for discrete concentration 
+
+#     # Multiprocessing double gene
+#     with multiprocessing.Pool(n_processor) as pool:
+#         result_df_list, result_dict_list = zip(*pool.starmap(get_BM_df, zipped_arg)) 
+#     result_df = pd.concat(result_df_list,axis = 1)
+#     result_df.columns = rename_columns(result_df)
+#     result_df.to_csv(f'./Data/{filename}.csv')
+    
+#     analysis_df = gene_index_culture_col_df(pd.DataFrame(result_dict_list))
+#     analysis_df.to_json(f"./Data/flanalysis_{filename}.json") 
+#     return None
     
 # Run
 if __name__ == "__main__":
