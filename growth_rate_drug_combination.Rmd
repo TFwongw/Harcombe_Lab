@@ -15,11 +15,18 @@ library(magrittr)
 
 source("./protocols-main/tecan_analysis/growthcurve_functions.r")
 filename = "./Data/checkerboard_run3.csv"
+
+
+SG_filename = 'BM_SG.csv'
+DG_filename = 'BM_DG.csv'
+filename = 'BM_SG.csv'
+# Drop the substring '.ac' from column names starting with 'S0.ac'
 ```
 
 ```{r}
 get_SG_both_gr = function(filename){
   biomass_mat = read.csv(filename, header = T)
+  colnames(biomass_mat) <- gsub("^S0.ac", "S0", colnames(biomass_mat))
 
   if (any(str_detect(colnames(biomass_mat), '0.0'))){
     biomass_mat = biomass_mat %>%
@@ -34,20 +41,21 @@ get_SG_both_gr = function(filename){
   sol_mat_lm =  tibble(NA, nrow = 1, ncol = length(biomass_mat)) 
   for (i in 1:length(biomass_mat)){ 
     # sol_mat_lm[,i] = fit_loglinear_lm(x, y = t(biomass_mat[,i])) 
-    sol_mat_lm[,i] = fit_logistic(x, y = t(biomass_mat[,i]), tries = 50)[1] # r is the first 
+    sol_mat_lm[,i] = fit_logistic(x, y = t(biomass_mat[,i]), tries = 20)[1] # r is the first
   } 
   colnames(sol_mat_lm) = colnames(biomass_mat)
-  # colnames(sol_mat_lm) = colnames(biomass_mat)[1:length(biomass_mat)]
-  # Gene_inhibition = unlist(map(strsplit(colnames(sol_mat_lm),'_'),2))
-  
   col_elements = strsplit(colnames(sol_mat_lm),'_')
   
+  if (length(unlist(map(col_elements,2))[0]) < 4){
+    Gene_inhibition = unlist(map(col_elements,2))}else{
+    Gene_inhibition = paste(unlist(map(col_elements,2)), unlist(map(col_elements,4)),sep='_')}
+
   growth_rate_mat = sol_mat_lm %>% 
     t() %>% 
     as_tibble() %>%
     mutate( # create culture, gene inhibition columns
       Species = unlist(map(col_elements,1)),
-      Gene_inhibition = paste(unlist(map(col_elements,2)), unlist(map(col_elements,4)),sep='_'), # paste0(NULL, ~) = ~
+      Gene_inhibition = Gene_inhibition,  # paste0(NULL, ~) = ~
       Culture = unlist(map(col_elements,3))) 
   
   growth_rate_mat_monoculture = growth_rate_mat %>% 
@@ -65,7 +73,7 @@ get_SG_both_gr = function(filename){
   return(list(growth_rate_mat_monoculture, growth_rate_mat_coculture, growth_rate_mat))
 }  
 
-gr_mat = get_SG_both_gr(filename)
+gr_mat = get_SG_both_gr(SG_filename)
 growth_rate_mat_monoculture = gr_mat[[1]]
 growth_rate_mat_coculture = gr_mat[[2]]
 growth_rate_mat = gr_mat[[3]]
@@ -87,7 +95,6 @@ write_SG_coculture_csv = function(growth_rate_mat, growth_rate_mat_monoculture, 
   growth_rate_mat
   write_csv(growth_rate_mat_SG_coculture, to_file)
   return(growth_rate_mat_SG_coculture)
-  # write_csv(growth_rate_mat_SG_coculture, "growth_rate_test.csv")
 }
 growth_rate_mat_SG_coculture = write_SG_coculture_csv(growth_rate_mat, growth_rate_mat_monoculture,'./Data/gr_Div_SG.csv') 
 
@@ -155,19 +162,20 @@ get_DG_gr = function(from_file, to_file,
                      growth_rate_mat_coculture, PAE_fun){
   
   biomass_mat = read.csv(from_file, header = T)
-  # if (any(str_detect(colnames(biomass_mat), '0.0'))){
+  
+  colnames(biomass_mat) <- gsub("^S0.ac", "S0", colnames(biomass_mat))
+  
+  # if (any(str_detect(colnames(biomass_mat), '0.0'))){  # Remove SG
   #   biomass_mat = biomass_mat %>%
   #     select(matches("cycle|[1-9]\\.[1-9]$"))
   # }
   
+
   x = t(biomass_mat['cycle'])
   biomass_mat = subset(biomass_mat, selec = -cycle)
   
-  sol_mat_lm =  tibble(NA, nrow = 1, ncol = length(biomass_mat)) # store result from function fit_loglinear_lm 
-  # for (i in 2:length(biomass_mat)){
-  for (i in 1:length(biomass_mat)){ 
-    # sol_mat_lm[,i] = fit_loglinear_lm(x, y = t(biomass_mat[,i]))
-    
+  sol_mat_lm =  tibble(NA, nrow = 1, ncol = length(biomass_mat)) # store result from function fit_loglinear_lm  
+  for (i in 1:length(biomass_mat)){  
     sol_mat_lm[,i] = fit_logistic(x, y = t(biomass_mat[,i]), tries = 20)[1]
     # sol_mat[,i-1] = fit_loglinear(x, y = t(biomass_mat[,i]), tries = 100)
   }
@@ -185,22 +193,17 @@ get_DG_gr = function(from_file, to_file,
       Species = unlist(map(col_elements,1)),
       Gene_inhibition = paste(unlist(map(col_elements,2)), unlist(map(col_elements,4)),sep='_'), # paste0(NULL, ~) = ~
       Culture = unlist(map(col_elements,3))) %>%
-    pivot_wider(names_from = Species, values_from = V1) %>% 
-    # mutate( 
-    #   First_gene = unlist(map(strsplit(Gene_inhibition,'\\.'),1)), # extract first gene in gene pair
-    #   Second_gene = unlist(map(strsplit(Gene_inhibition,'\\.'),2)) # extract second gene in gene pair
+    pivot_wider(names_from = Species, values_from = V1) %>%  
     mutate(
       First_gene = str_replace(Gene_inhibition, "\\.[0-9]$", ".0"), # extract first gene in gene pair
       Second_gene = str_replace(Gene_inhibition,'[0-9]\\.',"0."), # extract second gene in gene pair
-    ) %>%
-    # subset(select = -c(Gene_inhibition1)) %>%
+    ) %>% 
     merge(growth_rate_mat_coculture, by.x = "First_gene", by.y = "Gene_inhibition", all.x = TRUE) %>% # join 1st SG coculture
     merge(growth_rate_mat_monoculture, by.x = "First_gene", by.y = "Gene_inhibition", all.x = TRUE) %>% # join 1st SG monoculture
     rename_at(vars(ends_with("_monoculture") | ends_with("_coculture")),function(x) paste0(x, "_first_gene")) %>%
     merge(growth_rate_mat_coculture, by.x = "Second_gene", by.y = "Gene_inhibition", all.x = TRUE) %>% # join 2nd SG
     merge(growth_rate_mat_monoculture, by.x = "Second_gene", by.y = "Gene_inhibition", all.x = TRUE) %>%
     rename_at(vars(ends_with("_monoculture") | ends_with("_coculture")),function(x) paste0(x,"_second_gene")) %>%
-    # relocate(c('E0', 'S0'), .after = Gene_inhibition) %>% # switch columns positions
     relocate(First_gene, .before = E0_coculture_first_gene) %>%
     relocate(Second_gene, .before = E0_coculture_second_gene) %>%
     pivot_wider(names_from = Culture, values_from = c('E0','S0')) %>%
@@ -220,6 +223,6 @@ get_DG_gr = function(from_file, to_file,
   
 }
 
-DG_mat = get_DG_gr(filename,'./Data/gr_Div_DG.csv',growth_rate_mat_monoculture , growth_rate_mat_coculture, Mult_score)
+DG_mat = get_DG_gr(DG_filename,'./Data/gr_Div_DG.csv',growth_rate_mat_monoculture , growth_rate_mat_coculture, Mult_score)
 ```
  
