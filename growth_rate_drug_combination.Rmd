@@ -1,0 +1,228 @@
+---
+title: "biomass_fit_loglinear"
+author: "Thomas"
+date: "2023-06-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(purrr)
+library(magrittr)
+# library(patchwork)
+
+
+source("./protocols-main/tecan_analysis/growthcurve_functions.r")
+filename = "./Data/checkerboard_run3.csv"
+
+
+SG_filename = 'BM_SG.csv'
+DG_filename = 'BM_DG.csv'
+filename = 'BM_SG.csv'
+# Drop the substring '.ac' from column names starting with 'S0.ac'
+```
+
+```{r}
+get_SG_both_gr = function(filename){
+  biomass_mat = read.csv(filename, header = T)
+  colnames(biomass_mat) <- gsub("^S0.ac", "S0", colnames(biomass_mat))
+
+  if (any(str_detect(colnames(biomass_mat), '0.0'))){
+    biomass_mat = biomass_mat %>%
+      select(matches(
+        "cycle|.0$|0.[0-9]$"
+      )) 
+  }
+  
+  x = t(biomass_mat['cycle'])
+  biomass_mat = subset(biomass_mat, selec = -cycle)
+  
+  sol_mat_lm =  tibble(NA, nrow = 1, ncol = length(biomass_mat)) 
+  for (i in 1:length(biomass_mat)){ 
+    # sol_mat_lm[,i] = fit_loglinear_lm(x, y = t(biomass_mat[,i])) 
+    sol_mat_lm[,i] = fit_logistic(x, y = t(biomass_mat[,i]), tries = 20)[1] # r is the first
+  } 
+  colnames(sol_mat_lm) = colnames(biomass_mat)
+  col_elements = strsplit(colnames(sol_mat_lm),'_')
+  
+  if (length(unlist(map(col_elements,2))[0]) < 4){
+    Gene_inhibition = unlist(map(col_elements,2))}else{
+    Gene_inhibition = paste(unlist(map(col_elements,2)), unlist(map(col_elements,4)),sep='_')}
+
+  growth_rate_mat = sol_mat_lm %>% 
+    t() %>% 
+    as_tibble() %>%
+    mutate( # create culture, gene inhibition columns
+      Species = unlist(map(col_elements,1)),
+      Gene_inhibition = Gene_inhibition,  # paste0(NULL, ~) = ~
+      Culture = unlist(map(col_elements,3))) 
+  
+  growth_rate_mat_monoculture = growth_rate_mat %>% 
+    filter(Culture == 'monoculture') %>%
+    pivot_wider(names_from = Species, values_from = V1) %>%
+    rename_at(vars('E0','S0'),function(x) paste0(x,"_monoculture")) %>%
+    subset(select = -c(Culture))
+  
+  growth_rate_mat_coculture = growth_rate_mat %>% # matrix for joining gene pair inhibition matrix
+    filter(Culture == 'coculture') %>%
+    pivot_wider(names_from = Species, values_from = V1) %>%
+    rename_at(vars('E0','S0'),function(x) paste0(x,"_coculture")) %>%
+    subset(select = -c(Culture))
+  
+  return(list(growth_rate_mat_monoculture, growth_rate_mat_coculture, growth_rate_mat))
+}  
+
+gr_mat = get_SG_both_gr(SG_filename)
+growth_rate_mat_monoculture = gr_mat[[1]]
+growth_rate_mat_coculture = gr_mat[[2]]
+growth_rate_mat = gr_mat[[3]]
+```
+
+```{r}
+write_SG_coculture_csv = function(growth_rate_mat, growth_rate_mat_monoculture, to_file){
+  growth_rate_mat_SG_coculture = growth_rate_mat %>% # matrix save to SG csv
+    filter(Culture == 'coculture') %>%
+    pivot_wider(names_from = Species, values_from = V1) %>% # separate E0 and S0 growth rates
+    relocate(c('S0'), .after = E0) %>%
+    rename(E0_coculture = E0,
+           S0_coculture = S0)  %>% 
+    
+    arrange(desc(E0_coculture)) %>% 
+    left_join(growth_rate_mat_monoculture, by = 'Gene_inhibition') %>%
+    select(-c('Culture'))
+  
+  growth_rate_mat
+  write_csv(growth_rate_mat_SG_coculture, to_file)
+  return(growth_rate_mat_SG_coculture)
+}
+growth_rate_mat_SG_coculture = write_SG_coculture_csv(growth_rate_mat, growth_rate_mat_monoculture,'./Data/gr_Div_SG.csv') 
+
+```
+
+
+```{r}
+Mult_score = function(x,y){
+  return(x*y)
+}
+
+po_diff = function(x,y){ # x-predicted, y-observed
+  return(x-y)
+}
+
+get_normalized = function(growth_rate_mat, PAE_fun){
+  if (any(str_detect(colnames(growth_rate_mat_SG_coculture), 'Normal'))){
+    Normal_str = 'Normal'
+  }else{Normal_str = 'folP.folA_0.0'}
+  
+  row_Normal = growth_rate_mat_SG_coculture %>% filter(Gene_inhibition==Normal_str)
+
+  row_Normal = cbind(cbind(row_Normal, row_Normal),row_Normal)
+  
+  colnames(row_Normal) = colnames(growth_rate_mat)
+  
+  row_numeric = row_Normal %>% select(is.numeric)
+
+  mat_with_Normal = rbind(row_Normal, growth_rate_mat)
+  mat_standardized = mat_with_Normal %>% 
+                        select(where(is.numeric)) %>%
+                        mutate_each(~ ./.[1])
+
+  mat_PAE = mat_standardized %>% mutate(
+    Predicted_additive_effect_E0_coculture = unlist(map2(E0_coculture_first_gene, 
+                                       E0_coculture_second_gene, PAE_fun)),
+    Predicted_additive_effect_S0_coculture = unlist(map2(S0_coculture_first_gene,
+                                       S0_coculture_second_gene, PAE_fun)),
+    Predicted_additive_effect_E0_monoculture = unlist(map2(E0_monoculture_first_gene,
+                                         E0_monoculture_second_gene, PAE_fun)),
+    Predicted_additive_effect_S0_monoculture = unlist(map2(S0_monoculture_first_gene,
+                                         S0_monoculture_second_gene, PAE_fun))) %>% mutate(
+    po_diff_E0_coculture = unlist(map2(Predicted_additive_effect_E0_coculture, 
+                                       E0_coculture, po_diff)),
+    po_diff_S0_coculture = unlist(map2(Predicted_additive_effect_S0_coculture,
+                                       S0_coculture, po_diff)),
+    po_diff_E0_monoculture = unlist(map2(Predicted_additive_effect_E0_monoculture,
+                                         E0_monoculture, po_diff)),
+    po_diff_S0_monoculture = unlist(map2(Predicted_additive_effect_S0_monoculture,
+                                         S0_monoculture, po_diff))) 
+  
+  mat_str = mat_with_Normal %>% select(c(Gene_inhibition, First_gene, Second_gene))
+                             
+  mat_PAE = cbind(mat_str, mat_PAE) %>% 
+              relocate(c(E0_coculture, S0_coculture, Predicted_additive_effect_E0_coculture,
+                        Predicted_additive_effect_S0_coculture, E0_monoculture, S0_monoculture,
+                        Predicted_additive_effect_E0_monoculture,Predicted_additive_effect_S0_monoculture,
+                        First_gene, E0_coculture_first_gene, S0_coculture_first_gene, E0_monoculture_first_gene, S0_monoculture_first_gene, Second_gene, E0_coculture_second_gene, S0_coculture_second_gene,
+                        E0_monoculture_second_gene, S0_monoculture_second_gene), .after = Gene_inhibition)
+  return(list(mat_with_Normal, mat_PAE))
+}
+
+get_DG_gr = function(from_file, to_file, 
+                     growth_rate_mat_monoculture,
+                     growth_rate_mat_coculture, PAE_fun){
+  
+  biomass_mat = read.csv(from_file, header = T)
+  
+  colnames(biomass_mat) <- gsub("^S0.ac", "S0", colnames(biomass_mat))
+  
+  # if (any(str_detect(colnames(biomass_mat), '0.0'))){  # Remove SG
+  #   biomass_mat = biomass_mat %>%
+  #     select(matches("cycle|[1-9]\\.[1-9]$"))
+  # }
+  
+
+  x = t(biomass_mat['cycle'])
+  biomass_mat = subset(biomass_mat, selec = -cycle)
+  
+  sol_mat_lm =  tibble(NA, nrow = 1, ncol = length(biomass_mat)) # store result from function fit_loglinear_lm  
+  for (i in 1:length(biomass_mat)){  
+    sol_mat_lm[,i] = fit_logistic(x, y = t(biomass_mat[,i]), tries = 20)[1]
+    # sol_mat[,i-1] = fit_loglinear(x, y = t(biomass_mat[,i]), tries = 100)
+  }
+  # colnames(sol_mat) = colnames(biomass_mat)[2:length(biomass_mat)]
+  colnames(sol_mat_lm) = colnames(biomass_mat)
+  
+  
+  # Gene_inhibition = unlist(map(strsplit(colnames(sol_mat_lm),'_'),2))
+  col_elements = strsplit(colnames(sol_mat_lm),'_')
+  
+  growth_rate_mat = sol_mat_lm %>% 
+    t() %>% 
+    as_tibble() %>%
+    mutate( # create culture, gene inhibition columns
+      Species = unlist(map(col_elements,1)),
+      Gene_inhibition = paste(unlist(map(col_elements,2)), unlist(map(col_elements,4)),sep='_'), # paste0(NULL, ~) = ~
+      Culture = unlist(map(col_elements,3))) %>%
+    pivot_wider(names_from = Species, values_from = V1) %>%  
+    mutate(
+      First_gene = str_replace(Gene_inhibition, "\\.[0-9]$", ".0"), # extract first gene in gene pair
+      Second_gene = str_replace(Gene_inhibition,'[0-9]\\.',"0."), # extract second gene in gene pair
+    ) %>% 
+    merge(growth_rate_mat_coculture, by.x = "First_gene", by.y = "Gene_inhibition", all.x = TRUE) %>% # join 1st SG coculture
+    merge(growth_rate_mat_monoculture, by.x = "First_gene", by.y = "Gene_inhibition", all.x = TRUE) %>% # join 1st SG monoculture
+    rename_at(vars(ends_with("_monoculture") | ends_with("_coculture")),function(x) paste0(x, "_first_gene")) %>%
+    merge(growth_rate_mat_coculture, by.x = "Second_gene", by.y = "Gene_inhibition", all.x = TRUE) %>% # join 2nd SG
+    merge(growth_rate_mat_monoculture, by.x = "Second_gene", by.y = "Gene_inhibition", all.x = TRUE) %>%
+    rename_at(vars(ends_with("_monoculture") | ends_with("_coculture")),function(x) paste0(x,"_second_gene")) %>%
+    relocate(First_gene, .before = E0_coculture_first_gene) %>%
+    relocate(Second_gene, .before = E0_coculture_second_gene) %>%
+    pivot_wider(names_from = Culture, values_from = c('E0','S0')) %>%
+    relocate(c(E0_coculture, S0_coculture, E0_monoculture, S0_monoculture,
+               First_gene, E0_coculture_first_gene, S0_coculture_first_gene, E0_monoculture_first_gene,
+               S0_monoculture_first_gene, Second_gene, E0_coculture_second_gene, S0_coculture_second_gene,
+               E0_monoculture_second_gene, S0_monoculture_second_gene), .after = Gene_inhibition) %>%
+    arrange(desc(E0_coculture))
+  
+  l_PAE =  get_normalized(growth_rate_mat, PAE_fun)
+  
+  write.csv(l_PAE[1], to_file)
+  # 
+  write.csv(l_PAE[2],paste(str_replace(to_file, '.csv', ''),'_standardized_ByNoDrug','.csv', sep=''))
+  
+  return(list(growth_rate_mat, l_PAE[[1]], l_PAE[[2]])) # growth_rate_mat, mat_Normal, mat_PAE
+  
+}
+
+DG_mat = get_DG_gr(DG_filename,'./Data/gr_Div_DG.csv',growth_rate_mat_monoculture , growth_rate_mat_coculture, Mult_score)
+```
+ 
