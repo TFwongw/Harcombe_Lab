@@ -20,7 +20,7 @@ class AlphaFinderConfig:
     target_obj_val : dict = None  
     ko_intercepted : bool = None
     ever_eval =  False
-    iter_max = 15
+    iter_max = 25
     i_iter = 0
 
     def __post_init__(self): # not post_inited
@@ -468,7 +468,7 @@ class CocultureAlphaFinder(AlphaFinderConfig): # scale normal & knockout to 1-0
         std_gr = self.cal_std_gr(coculture_biomass_df, self.gr_Normal) # ?check this
 #         std_gr = self.cal_std_gr(coculture_biomass_df, 1.3)
 
-        self.is_new_ub = (std_gr < target_gr) or ((std_gr>1.3) and self.search_alpha>2)# sharp bound, although lower estimate, no search for higher alpha if just meet
+        self.is_new_ub = (std_gr < target_gr) or ((std_gr>1.3) and self.search_alpha>1.08)# sharp bound, although lower estimate, no search for higher alpha if just meet
         self.converge_alpha = self.is_found(self.search_alpha, self.alpha_lb, self.alpha_ub, self.precision)
         # self.found_alpha = self.found_alpha or 
         #     (self.std_gr > self.target_obj_val*acceptance_threshold_upper)
@@ -488,18 +488,18 @@ class CocultureAlphaFinder(AlphaFinderConfig): # scale normal & knockout to 1-0
         # update optimal df
         
         obj_req = ((std_gr > self.target_obj_val*0.95) and (std_gr < self.target_obj_val*1.1)  # harsh lb
-                    or (std_gr > 1.15)
+                    or ((std_gr > 1.15) and (std_gr < 1.3))
                     or self.is_growth_switch)
         
         temp_df = pd.DataFrame.from_dict(
             {self.current_gene :
-                {'lb_ub' : (self.alpha_lb, self.alpha_ub),
+                {'std_growth_rate' : std_gr,
+                'lb_ub' : (self.alpha_lb, self.alpha_ub),
                 'converge_alpha' : self.converge_alpha,
                 'obj_found': self.obj_found,
                 'bool_gr_coculture_exceed_limit': bool_gr_coculture_exceed_limit,
                 'classify_growth_switch': self.is_growth_switch,
-                'Non_essential': self.ko_intercepted,
-                'obj_req_met' : None
+                'Non_essential': self.ko_intercepted
                 }}, 
                 orient='index')
         nxt_alpha_table = pd.concat([nxt_alpha_table, temp_df], axis=1)
@@ -527,8 +527,11 @@ class CocultureAlphaFinder(AlphaFinderConfig): # scale normal & knockout to 1-0
 
     def classify_growth_switch(self):
         # eval all true
-        alpha_range_req =  (self.alpha_ub - self.alpha_lb) < 0.8 and (self.alpha_lb > 1.01) # ever update lb and ub
-        obj_req = not any(0.3 < val < 0.8 for val in self.trace_obj_val) 
+        alpha_range_req =  ((self.alpha_ub - self.alpha_lb) < 0.15) and (self.alpha_lb > 1.01) # ever update lb and ub
+        obj_req = (not any(0.3 < val < 0.8 for val in self.trace_obj_val) and
+                    (min(self.trace_obj_val) < 1.3) and 
+                    (max(self.trace_obj_val) > .3))
+                    
         # ? req more evalluation for alpha inside the bound?
         self.is_growth_switch = (alpha_range_req and obj_req) or self.alpha_ub < 1.018
         return self.is_growth_switch
