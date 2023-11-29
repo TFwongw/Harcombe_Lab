@@ -358,8 +358,7 @@ class CocultureAlphaFinder(AlphaFinderConfig): # scale normal & knockout to 1-0
         if not self.gr_Normal:
             if self.current_gene == 'Normal':
                 self.gr_Normal = self.calculate_gr_ko()
-            else: self.gr_Normal = 0.000025 # ?check effect of lcts conc changed in Div_COMETS
-            # 0.000523 for .1 lcts
+            else: self.gr_Normal = 0.00052 # for .1 lcts
         return float(self.gr_Normal)
 
     def calculate_gr_ko(self):
@@ -417,6 +416,7 @@ class CocultureAlphaFinder(AlphaFinderConfig): # scale normal & knockout to 1-0
         self.alpha_use = Ealpha if Ealpha<1e5 else Salpha
         if self.alpha_use > 1e4:
             self.alpha_use = 1.04
+            self.exp_leap = 3
         
         if not self.search_alpha and (self.current_gene != 'Normal'):
                 self.search_alpha = (self.alpha_use-1)/2+1 if self.alpha_use > 2 else self.alpha_use
@@ -470,14 +470,16 @@ class CocultureAlphaFinder(AlphaFinderConfig): # scale normal & knockout to 1-0
 
         self.is_new_ub = (std_gr < target_gr) or ((std_gr>1.3) and self.search_alpha>1.08)# sharp bound, although lower estimate, no search for higher alpha if just meet
         self.converge_alpha = self.is_found(self.search_alpha, self.alpha_lb, self.alpha_ub, self.precision)
+        
         # self.found_alpha = self.found_alpha or 
         #     (self.std_gr > self.target_obj_val*acceptance_threshold_upper)
 
         self.obj_found = ((std_gr > self.target_obj_val*self.acceptance_threshold_lower) and 
             (std_gr < self.target_obj_val*self.acceptance_threshold_upper)) 
         
-        bool_gr_coculture_exceed_limit = (std_gr > 1.15) and (std_gr<1.3) and self.search_alpha>5
+        bool_gr_coculture_exceed_limit = (std_gr > 1.15) and (std_gr<1.3) and self.search_alpha>1.15
         self.found_alpha = self.converge_alpha or self.obj_found or bool_gr_coculture_exceed_limit or self.classify_growth_switch()
+        bool_gr_coculture_exceed_limit = (std_gr > 1.15) # assign again for record but not eval in found_alpha
 
         if self.is_new_ub:
             self.nxt_alpha_table = nxt_alpha_table
@@ -507,7 +509,7 @@ class CocultureAlphaFinder(AlphaFinderConfig): # scale normal & knockout to 1-0
         self.trace_alpha_table.append(nxt_alpha_table.to_dict())
         
         
-        if obj_req or (self.opt_df is None): # store only qualified alpha
+        if obj_req or (self.opt_df is None) or self.converge_alpha: # store only qualified alpha
             # if self.opt_df is not None: # do not append the first 
             #     pass
             #     temp_df = pd.DataFrame.from_dict(
@@ -525,15 +527,24 @@ class CocultureAlphaFinder(AlphaFinderConfig): # scale normal & knockout to 1-0
             self.opt_alpha_table = nxt_alpha_table
         return full_df
 
-    def classify_growth_switch(self):
+    def classify_growth_switch(self, min_attain=.9, max_attain=.3):
         # eval all true
-        alpha_range_req =  ((self.alpha_ub - self.alpha_lb) < 0.15) and (self.alpha_lb > 1.01) # ever update lb and ub
-        obj_req = (not any(0.3 < val < 0.8 for val in self.trace_obj_val) and
-                    (min(self.trace_obj_val) < 1.3) and 
-                    (max(self.trace_obj_val) > .3))
-                    
+        alpha_range = (self.alpha_ub - self.alpha_lb)
+        alpha_range_narrow = (((alpha_range < 0.15) and (self.alpha_ub < 3)) or # circumvent precision <2 in subsequent evaluation
+                                ((alpha_range < .3) and (5<self.alpha_lb<10)) or
+                                ((alpha_range < 1.3) and (self.alpha_lb > 10)))
+        alpha_range_req =  (alpha_range_narrow # 
+                            and (self.alpha_lb > 1.01)) # ever update lb and ub
+        
+        obj_req = (not any(0.3 < val < 0.8 for val in self.trace_obj_val) and # mrdA forever > 1 for low dose
+                    (min(self.trace_obj_val) < min_attain) and 
+                    (max(self.trace_obj_val) > max_attain))
+        
+        if alpha_range_narrow and all(val >1 for val in self.trace_obj_val): # small dose all > Normal
+            obj_req = True
+                
         # ? req more evalluation for alpha inside the bound?
-        self.is_growth_switch = (alpha_range_req and obj_req) or self.alpha_ub < 1.018
+        self.is_growth_switch = (alpha_range_req and obj_req) or (self.alpha_ub < 1.018)
         return self.is_growth_switch
     
     def out_opt_alpha_table(self):

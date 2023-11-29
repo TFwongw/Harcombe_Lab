@@ -44,10 +44,8 @@ alpha_table.columns = ['E0', '_', 'S0']
 alpha_table = pd.read_csv('./Data/checker_alpha_table.csv', index_col = 0)
 '''
 
-filename = 'alpha_table_csearch'
-alpha_table = pd.read_csv(f'./Data/{filename}.csv', index_col=0) 
-
-method_n = filename.split('_')[-1]
+file_list = ['alpha_table_m1', 'alpha_table_m2', 'alpha_table_m3']
+# file_list = ['alpha_table_m1', 'alpha_table_m3']
 
 # def generate_csv(gene_combos: list, filename: str, alpha_table, mono=True):
 def generate_csv(gene_combos: list, filename: str, **kwargs):
@@ -84,10 +82,8 @@ if __name__ == "__main__":
     
     gene_combos = pd.read_csv('./Data/GeneCombos.csv',header=None)[0][:n_combos]
     gene_combos = list(ast.literal_eval(ele) for ele in gene_combos)
-    gene50 = list(alpha_table.index)
-    gene50.extend(['Normal'])
     
-    kwargs = {'alpha_table': alpha_table, 
+    kwargs = {'alpha_table': None, 
                 'mono': True, 
                 'p': p,
                 'E0': E0, 
@@ -95,8 +91,18 @@ if __name__ == "__main__":
                 'return_sim': False, 
                 'ko': False}
     
-    SGresult_df, SGanalysis_df  = generate_csv(gene50, f'BM_SG_{method_n}', **kwargs)
-    DGresult_df, DGanalysis_df  =  generate_csv(gene_combos, f'BM_DG_{method_n}', **kwargs) 
+    for filename in file_list: 
+        alpha_table = pd.read_csv(f'./Data/{filename}.csv', index_col=0) 
+        kwargs['alpha_table'] = alpha_table
+        gene50 = list(alpha_table.index)
+        gene50.extend(['Normal'])
+        
+        if '_m2' in filename:
+            alpha_table.iloc[:, :2] = alpha_table.iloc[:, :2].where(alpha_table.iloc[:, :2] <= 5e3, 1e5) # reset to 1e5 for nonessential genes
+        
+        method_n = filename.split('_')[-1]
+        SGresult_df, SGanalysis_df  = generate_csv(gene50, f'BM_SG_{method_n}', **kwargs)
+        DGresult_df, DGanalysis_df  =  generate_csv(gene_combos, f'BM_DG_{method_n}', **kwargs) 
     
     end = time() 
     print('Time Elapsed: ', end-start)

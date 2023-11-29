@@ -1,0 +1,6 @@
+/var/spool/slurmd/job77463049/slurm_script: line 12: venv/bin/activate: No such file or directory
+/var/spool/slurmd/job77463049/slurm_script: line 17: cd: Run_Comets/: No such file or directory
+Traceback (most recent call last):
+  File "Div_COMETS.py", line 10, in <module>
+    import cometspy as c
+ModuleNotFoundError: No module named 'cometspy'

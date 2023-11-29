@@ -469,8 +469,8 @@ def get_BM_df(current_gene, n_dir, alpha_table, mono=True, p=p, checker_suffix=N
     return (full_df, out_dict) if not return_sim else (full_df, out_dict, co_sim)
 
 def rename_columns(df):
-    df.columns = [re.sub('S0_ac','S0.ac', ele) for ele in df] # S0_ac -> S0.ac
-    df.columns = [re.sub('S0_gal','S0.gal', ele) for ele in df] # S0_ac -> S0.ac
+    df.columns = [re.sub('S0_ac_','S0.ac_', ele) for ele in df] # S0_ac -> S0.ac
+    df.columns = [re.sub('S0_gal_','S0.gal_', ele) for ele in df] # S0_ac -> S0.ac
     df.columns = [re.sub(',','.',
            re.sub('\'|\(|\)| |\[|\]','',ele)) # ('gene1', 'gene2') -> gene1.gene2
            for ele in df.columns]

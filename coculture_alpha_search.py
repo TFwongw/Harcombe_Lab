@@ -23,16 +23,16 @@ E0, S0, all_components = load_models()
 p = c.params()
 p.set_param("defaultKm", 0.00001) # M 
 p.set_param("defaultVmax", 10) #mmol/gDw/hr
-p.set_param("maxCycles", 100)
 p.set_param("maxCycles", 90)
 p.set_param("timeStep", 1) 
 p.set_param('writeFluxLog', True)
 p.set_param('writeMediaLog', True)
 
 obj_style = 'MAX_OBJECTIVE_MIN_TOTAL'
+
 # obj_style = 'MAXIMIZE_OBJECTIVE_FLUX'
-file_suffix = 'm2'
-# file_suffix = 'm2MAXBM'
+# file_suffix = 'm2'
+file_suffix = 'tv2'
 
 # start with gr_Normal 
 def get_gr_Normal():    
@@ -45,14 +45,16 @@ def get_gr_Normal():
     return gr_Normal
     
 gr_Normal = get_gr_Normal()
-# potential_genes = ['dapA']
-search_alpha = 8
+potential_genes = ['serC']
+potential_genes = ['dapF', 'acnB', 'pgk', 'pfkA', 'mrdA', 'serC', 'dadX', 'gltD', 'gapA']
+# search_alpha = 13
 search_alpha = None
 
 
 opt_alpha_list, trace_dict = alpha_finder.run_coculture_search_mp(potential_genes, file_suffix, n_processor=10,
                                                                 model=[E0, S0], search_alpha=search_alpha,
+                                                                # exp_leap= 1.1, alpha_table=alpha_table, p=p,
                                                                 exp_leap= 1.3, alpha_table=alpha_table, p=p,
                                                                 carbon_source_val=.1, target_obj_val=.5, 
-                                                                precision=3, gr_Normal=gr_Normal, initial_pop=initial_pop, obj_style=obj_style)
+                                                                precision=2, gr_Normal=gr_Normal, initial_pop=initial_pop, obj_style=obj_style)
 
