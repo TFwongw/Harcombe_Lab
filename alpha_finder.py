@@ -21,7 +21,7 @@ class AlphaFinderConfig:
     ko_intercepted : bool = None
     ever_eval =  False
     iter_max = 25
-    i_iter = 0
+    i_iter = 0    
 
     def __post_init__(self): # not post_inited
         self.is_monoculture = None
@@ -34,12 +34,12 @@ class AlphaFinderConfig:
         if (is_new_ub == False):  # raise lb, search higher alpha
             alpha_lb = search_alpha
             # if ((search_alpha*exp_leap <alpha_ub) and is_monoculture): # exponential search(large step)
-            if ((search_alpha*exp_leap <alpha_ub)): # exponential search(large step)
+            if ((alpha_ub > 1e4) and (alpha_lb> 1e3)): # when alpha ub not get updated, exponential search(large step)
                 if (search_alpha*exp_leap <alpha_ub and is_new_ub == False): 
                     search_alpha *= exp_leap
             
             # Test this
-            if search_alpha == alpha_lb:
+            if search_alpha == alpha_lb: # search alpha not get updated, then binary search 
                 search_alpha = (search_alpha+alpha_ub)/2        
         else: # search alpha not accepted, lower ub, lower search_alpha
             # start binary search, in (alpha_lb, search_alpha)
@@ -53,10 +53,32 @@ class AlphaFinderConfig:
     def is_found(search_alpha, alpha_lb, alpha_ub, precision):
         if (search_alpha<2) and (precision <3):
             precision = 3
+        if alpha_lb > 15:
+            precision = 1
         return (round(search_alpha,precision)==round(alpha_ub,precision) or
                                  round(search_alpha,precision)==round(alpha_lb,precision) or
                                 (search_alpha>9e4))
 
+    def classify_growth_switch(self, min_attain=.9, max_attain=.3):
+        # eval all true
+        alpha_range = (self.alpha_ub - self.alpha_lb)
+        alpha_range_narrow = (((alpha_range < 0.15) and (self.alpha_ub < 3)) or # circumvent precision <2 in subsequent evaluation
+                                ((alpha_range < .3) and (5<self.alpha_lb<10)) or
+                                ((alpha_range < 1.3) and (self.alpha_lb > 10)))
+        alpha_range_req =  (alpha_range_narrow # 
+                            and (self.alpha_lb > 1.01)) # ever update lb and ub
+        
+        obj_req = (not any(0.3 < val < 0.8 for val in self.trace_obj_val) and # mrdA forever > 1 for low dose
+                    (min(self.trace_obj_val) < min_attain) and 
+                    (max(self.trace_obj_val) > max_attain))
+        
+        if alpha_range_narrow and all(val >1 for val in self.trace_obj_val): # small dose all > Normal
+            obj_req = True
+                
+        # ? req more evalluation for alpha inside the bound?
+        self.is_growth_switch = (alpha_range_req and obj_req) or (self.alpha_ub < 1.018)
+        return self.is_growth_switch
+    
     def find_feasible_alpha(self): 
         print(self.current_gene, self.ko_intercepted)
         def eval_continue():
@@ -136,13 +158,14 @@ class MonocultureAlphaFinder(AlphaFinderConfig):
     model : str
     search_alpha : float
     current_gene : str
-    target_obj_val : float  
-    response_record : dict = field(default_factory=dict) 
+    target_obj_val : float = .5
+    response_record = None # for iteratice uptate in checkerboard
     opt_df : pd.DataFrame = None 
     exp_leap : int = 2
     precision : int = 2 # precision of alpha
     acceptance_threshold_upper : float = None
     acceptance_threshold_lower : float = None
+    trace_obj_val : List = field(default_factory=list)
         
     def __post_init__(self):
         super().__post_init__()
@@ -154,24 +177,33 @@ class MonocultureAlphaFinder(AlphaFinderConfig):
         if not self.acceptance_threshold_upper:
             self.acceptance_threshold_upper = 1.1
         self.norm_obj_val = self.model.slim_optimize()
+        if not self.response_record:       
+            self.response_record = {self.current_gene: {self.model: {'ICX': convert_arg_to_list(self.target_obj_val), 'response': {}}}}
 
-    def fill_response_record(self, obj_val):
+    def fill_response_record(self, obj_val, is_lowest_abs_diff=False):
         obj_val_interval = float(format(obj_val, '.2f'))
-        record = self.response_record[self.current_gene][self.model]['response'].get(obj_val_interval)
-        abs_diff = abs(obj_val - obj_val_interval) 
+        record = self.response_record[self.current_gene][self.model]['response'].get(obj_val_interval) # closest alpha in the obj_interval
+        interval_abs_diff = abs(obj_val - obj_val_interval) 
 
-
-        if record and (record['abs_diff'] >= abs_diff): # erase record, update to current alpha
+        if record and (record['interval_abs_diff'] >= interval_abs_diff): # erase record, update to current alpha
             record = None  
-        if record and (obj_val_interval > .99) and (record['search_alpha']>self.search_alpha): # IC100 update most large alpha
+        if record and (obj_val_interval > .99) and (record['search_alpha']>self.search_alpha): # IC0 update most large alpha
             record = None
+
+        if self.opt_df is not None:
+            previous_min = min([ele['target_abs_diff'] for ele in 
+                    self.response_record[self.current_gene][self.model]['response'].values()])
+            # print(interval_abs_diff, previous_min)
+            if interval_abs_diff <= previous_min:
+                is_lowest_abs_diff = True
 
         if not record:
             self.response_record[self.current_gene][self.model]['response'][obj_val_interval] = {
                 'search_alpha' : self.search_alpha,
                 'precise_obj_val' : obj_val, 
-                'abs_diff' : abs_diff}
-        return None
+                'interval_abs_diff' : interval_abs_diff,
+                'target_abs_diff' : abs(obj_val - self.target_obj_val)}
+        return is_lowest_abs_diff
 
     def evaluate_alpha_from_biomass(self):
         # print(self.alpha_ub)
@@ -183,32 +215,32 @@ class MonocultureAlphaFinder(AlphaFinderConfig):
 
         # self.is_new_ub = (summary_df['Net_Flux'][0]<1e-8 or summary_df['Net_Flux'][0]>100 or 
         #                   obj_val<self.target_obj_val*.85 or obj_val>1) # overinhibition, search alpha too high
-        
+        self.trace_obj_val.append(obj_val)
         obj_val = obj_val/ self.norm_obj_val # to normalized 
         self.is_new_ub = (summary_df['Net_Flux'][0]<1e-8 or summary_df['Net_Flux'][0]>100 or 
                           obj_val<self.target_obj_val*self.acceptance_threshold_lower or obj_val>1.2) # overinhibition, search alpha too high 
         
-        print('obj', obj_val, self.target_obj_val)
+        # print('obj', obj_val, self.target_obj_val)
         
         self.found_alpha = self.is_found(self.search_alpha, self.alpha_lb, self.alpha_ub, self.precision)
         
         # update optimal df
-        net_flux_req = (summary_df['Net_Flux'][0]>0) and (self.is_new_ub == False)
-        self.fill_response_record(obj_val)
+        net_flux_req = (summary_df['Net_Flux'][0]>0 or obj_val>self.norm_obj_val*.1)
+        is_lowest_abs_diff = self.fill_response_record(obj_val)
 
-        # TODO: same req not updated in CocultureAlphaFinder
-        obj_req = ((obj_val > self.target_obj_val*self.acceptance_threshold_lower) and 
-                   (obj_val < self.target_obj_val*self.acceptance_threshold_upper)) 
-                   
+        # obj_req = ((obj_val > self.target_obj_val*self.acceptance_threshold_lower) and 
+        #            (obj_val < self.target_obj_val*self.acceptance_threshold_upper)) 
+        
+        obj_req = is_lowest_abs_diff
         if (net_flux_req and obj_req) or (self.opt_df is None): # store only qualified alpha
             self.opt_df = summary_df
-        self.opt_df = summary_df 
         # print(summary_df['div_opt_obj_val'][0]/ self.norm_obj_val)
         
         # print(self.search_alpha, self.found_alpha, self.is_new_ub, self.alpha_lb, self.alpha_ub)
-        
+
     def modify_opt_df(self):
         opt_df = self.opt_df
+        opt_df['is_growth_switch'] = self.classify_growth_switch()
         print(self.current_gene, opt_df['div_opt_alpha'][0], opt_df[f'div_opt_obj_val'][0])
     #     opt_df['div_opt_alpha'] = np.floor(opt_df['div_opt_alpha'][0]*10**(precision))/10**(precision)
         opt_df.insert(loc=2, column='Percent_target_obj_val', value=opt_df['div_opt_obj_val']/self.norm_obj_val)
@@ -216,7 +248,6 @@ class MonocultureAlphaFinder(AlphaFinderConfig):
         opt_df.columns = [f'{self.model.id}_'+element for element in opt_df.columns]
         self.opt_df = opt_df
         return (opt_df[f'{self.model.id}_div_opt_alpha'],opt_df[f'{self.model.id}_div_opt_obj_val'],opt_df) # alpha_feasible, and upper bound of alpha
-
 
 # %%
 # with open("./Drug_gene_Similarity/Data/potential_genes.json", "r") as fp:
@@ -228,77 +259,69 @@ potential_genes = [
     'gapA'
 ]
 
-# move to setup
+##--------Perform Monoculture Secrch---------##
 def Sij_biomass(model, alphas = 1, genes = 'folA', slim_opt = False, pfba = False): 
-        with model:
-            rct_ids = alter_Sij(model, alphas, genes) # same
-
-            # need run sim and cal gr 
-            if (slim_opt == False):
-                sol_sol = model.optimize()   
-                if pfba:
-                    return sol_sol, cobra.flux_analysis.pfba(model)
-
-                obj_val = sol_sol.objective_value     
-                summary_df = get_summary_df(model, alphas, obj_val, rct_ids, sol_sol.fluxes)  
-                return(alphas, obj_val, summary_df)            
-            else: 
-    #             return(pd.DataFrame([{f'div_opt_obj_val': model.slim_optimize()}]))
-                return(model.slim_optimize()) 
-
-def get_div_obj_df(model_id, list_target_obj_val, 
-                   first_n_gene=None, alpha_df = None, search_alpha = None,precision=6,
-                   potential_genes=potential_genes, media=None,        
-                   acceptance_threshold_upper = None,
-                   acceptance_threshold_lower = None): # media not required for GR
-                   
-# get_div_obj_df('E0.lcts', list_target_obj_val, potential_genes=['folP'], media=media)
-    # generate full biomass dataframe for a single species
-    # given alpha or automatic search for optimal with the given objective value
-    if not first_n_gene: first_n_gene = len(potential_genes)
-    
-    if isinstance(model_id,str):
-        model_id = model_id.replace('_limited','')
-        medium_key = model_id+'_limited'
-#         print(medium_key, media)
-        if media:
-            model = retrive_model_in_medium(medium_key, media)
-        else: sys.exit('No media')
-    else:
-        model = model_id # ? no medium key
-        model_id = model.id
-    medium_key = ''.join([ele for ele in list_target_obj_val.keys() if model_id in ele])
-    target_obj_val = list_target_obj_val[medium_key] #? effect to growth rate searching
-#     !get_model list_target_obj_val - fill in target in AF
-    
     with model:
-        obj_div_df = pd.DataFrame() # obj_val: biomass/ growth rate
-        query_gene_list = list(potential_genes)[:first_n_gene] if isinstance(first_n_gene, (int, float)) else list(potential_genes)[first_n_gene[0]:first_n_gene[1]]
-        for i, current_gene in enumerate(query_gene_list): # iter gene 
+        rct_ids = alter_Sij(model, alphas, genes) # same
+
+        # need run sim and cal gr 
+        if (slim_opt == False):
+            sol_sol = model.optimize()   
+            if pfba:
+                return sol_sol, cobra.flux_analysis.pfba(model)
+
+            obj_val = sol_sol.objective_value     
+            summary_df = get_summary_df(model, alphas, obj_val, rct_ids, sol_sol.fluxes)  
+            return(alphas, obj_val, summary_df)            
+        else: 
+#             return(pd.DataFrame([{f'div_opt_obj_val': model.slim_optimize()}]))
+            return(model.slim_optimize()) 
+
+def get_single_div_obj_df(model, target_obj_val, first_n_gene=None, alpha_df = None, search_alpha = None,precision=6,
+                   potential_genes=potential_genes, acceptance_threshold_upper=1.1, acceptance_threshold_lower=.95): # media not required for GR
+
+#     # generate full biomass dataframe for a single species
+#     # given alpha or automatic search for optimal with the given objective value
+#     if not first_n_gene: first_n_gene = len(potential_genes)
+    obj_div_df = pd.DataFrame() # obj_val: biomass/ growth rate
+
+    if first_n_gene is None: 
+        query_gene_list = potential_genes
+    elif isinstance(first_n_gene, (int, float)):
+        query_gene_list = list(potential_genes)[:first_n_gene]
+    else:
+        query_gene_list = list(potential_genes)[first_n_gene[0]:first_n_gene[1]]
+
+    for i, current_gene in enumerate(query_gene_list): # iter gene 
 #         for i, current_gene in enumerate(obj_flux_df.index[1:][:1]): # iter gene 
-            print(current_gene,'in cal')
+        print(current_gene,'in cal')
+        with model:
+            
             if alpha_df is None: 
                 if not search_alpha: search_alpha = 1.02 
                 # AlphaFinder class for every model and SG
-                AF = MonocultureAlphaFinder(model=model, 
-                                            search_alpha = search_alpha, 
-                                            current_gene = current_gene, 
-                                            target_obj_val = target_obj_val, 
-                                            precision=precision,
-                                            acceptance_threshold_upper = acceptance_threshold_upper,
-                                            acceptance_threshold_lower = acceptance_threshold_lower)
+                AF = MonocultureAlphaFinder(model=model,
+                            search_alpha = search_alpha,
+                            current_gene = current_gene, 
+                            target_obj_val = target_obj_val, 
+                            exp_leap=3,
+                            precision=precision,
+                            acceptance_threshold_upper = acceptance_threshold_upper,
+                            acceptance_threshold_lower = acceptance_threshold_lower)
                 alpha, obj_value,temp_df = AF.find_feasible_alpha()
             else:
-                alpha = alpha_df.loc[current_gene,f'{model_id}_div_opt_alpha'] # get alpha for corresponding gene from alpha_df
+                alpha = alpha_df.loc[current_gene,f'{model.id}_div_opt_alpha'] # get alpha for corresponding gene from alpha_df
                 alpha,obj_value,temp_df = Sij_biomass(model, alpha,  
-                                              genes = current_gene, model_id = model_id)
-
+                                                genes = current_gene, model_id = model.id)
             temp_df['Gene_inhibition'] = current_gene    
     #         print(alpha, current_gene, )
             obj_div_df = pd.concat([obj_div_df, temp_df.set_index('Gene_inhibition')],axis=0)
-#         add_prefix_div_df(obj_div_df, f'{model_id}') 
-#         print(obj_div_df.index)
-    return(obj_div_df)
+    return obj_div_df
+
+def get_div_obj_df(model_list, target_obj_val, potential_genes=potential_genes, precision=4):
+    alpha_obj_df_list = iter_species(model_list, get_single_div_obj_df,
+                            target_obj_val=target_obj_val, potential_genes=potential_genes, precision=precision)
+    return pd.concat(alpha_obj_df_list, axis=1)
 
 # %% [markdown]
 # 
@@ -315,9 +338,9 @@ class CocultureAlphaFinder(AlphaFinderConfig): # scale normal & knockout to 1-0
     alpha_table : pd.DataFrame = None
     precision : int = 1 # precision of alpha
 #     alpha_table : pd.DataFrame = alpha_table # init AFConfig
-    trace_obj_val : List = field(default_factory=list)
-    trace_alpha_table : List = field(default_factory=list)
     trace_biomass : List = field(default_factory=list)
+    trace_obj_val : List = field(default_factory=list) # TODO: combine all trace_XX & convert to dict, follow format of response_record in MonocultureAlphaFinder
+    trace_alpha : List = field(default_factory=list)
     gr_ko : float = None
     n_dir : str = ''
     opt_alpha_table: pd.DataFrame = field(default_factory=pd.DataFrame)
@@ -328,7 +351,7 @@ class CocultureAlphaFinder(AlphaFinderConfig): # scale normal & knockout to 1-0
     exp_leap = None
     gr_Normal : float = None
     carbon_source_val : float = 5e-3
-    add_nutrient_val : float = .08 #Met litmiing
+    add_nutrient_val : float = 10 # DO NOT set Met limiting in batch culture 
     is_growth_switch = False
     initial_pop : float = 1e-8
     p : None = None
@@ -439,6 +462,9 @@ class CocultureAlphaFinder(AlphaFinderConfig): # scale normal & knockout to 1-0
         else:
             gr = (coculture_biomass_df.loc[growth_phase[1]] - coculture_biomass_df.loc[growth_phase[0]])/(growth_phase[1]-growth_phase[0])
         standardized_gr = (float(gr) - self.gr_ko)/(gr_Normal-self.gr_ko) # offset scale self.gr_ko then scale
+        if standardized_gr > 1:
+            self.exp_leap = 3 # for coculture gr inherently > 1, require large leap
+        
         # print('standardized gr: ', standardized_gr)
         self.trace_obj_val.append(standardized_gr)
         print('BBM', coculture_biomass_df.loc[growth_phase[1]], coculture_biomass_df.loc[growth_phase[0]], 'gphase',float(growth_phase[1]),float(growth_phase[0]))
@@ -468,7 +494,7 @@ class CocultureAlphaFinder(AlphaFinderConfig): # scale normal & knockout to 1-0
         std_gr = self.cal_std_gr(coculture_biomass_df, self.gr_Normal) # ?check this
 #         std_gr = self.cal_std_gr(coculture_biomass_df, 1.3)
 
-        self.is_new_ub = (std_gr < target_gr) or ((std_gr>1.3) and self.search_alpha>1.08)# sharp bound, although lower estimate, no search for higher alpha if just meet
+        self.is_new_ub = (std_gr < target_gr)# sharp bound, although lower estimate, no search for higher alpha if just meet
         self.converge_alpha = self.is_found(self.search_alpha, self.alpha_lb, self.alpha_ub, self.precision)
         
         # self.found_alpha = self.found_alpha or 
@@ -477,9 +503,8 @@ class CocultureAlphaFinder(AlphaFinderConfig): # scale normal & knockout to 1-0
         self.obj_found = ((std_gr > self.target_obj_val*self.acceptance_threshold_lower) and 
             (std_gr < self.target_obj_val*self.acceptance_threshold_upper)) 
         
-        bool_gr_coculture_exceed_limit = (std_gr > 1.15) and (std_gr<1.3) and self.search_alpha>1.15
-        self.found_alpha = self.converge_alpha or self.obj_found or bool_gr_coculture_exceed_limit or self.classify_growth_switch()
-        bool_gr_coculture_exceed_limit = (std_gr > 1.15) # assign again for record but not eval in found_alpha
+        bool_gr_coculture_exceed_limit = (std_gr > 1)
+        self.found_alpha = self.converge_alpha or self.obj_found or self.classify_growth_switch()
 
         if self.is_new_ub:
             self.nxt_alpha_table = nxt_alpha_table
@@ -490,7 +515,6 @@ class CocultureAlphaFinder(AlphaFinderConfig): # scale normal & knockout to 1-0
         # update optimal df
         
         obj_req = ((std_gr > self.target_obj_val*0.95) and (std_gr < self.target_obj_val*1.1)  # harsh lb
-                    or ((std_gr > 1.15) and (std_gr < 1.3))
                     or self.is_growth_switch)
         
         temp_df = pd.DataFrame.from_dict(
@@ -506,7 +530,7 @@ class CocultureAlphaFinder(AlphaFinderConfig): # scale normal & knockout to 1-0
                 orient='index')
         nxt_alpha_table = pd.concat([nxt_alpha_table, temp_df], axis=1)
         nxt_alpha_table.index.name='Gene_inhibition'
-        self.trace_alpha_table.append(nxt_alpha_table.to_dict())
+        self.trace_alpha.append(nxt_alpha_table.to_dict())
         
         
         if obj_req or (self.opt_df is None) or self.converge_alpha: # store only qualified alpha
@@ -525,36 +549,18 @@ class CocultureAlphaFinder(AlphaFinderConfig): # scale normal & knockout to 1-0
             self.opt_df = [full_df, nxt_alpha_table]
             # self.opt_alpha_table = pd.concat([nxt_alpha_table, temp_df], axis=1)
             self.opt_alpha_table = nxt_alpha_table
-        return full_df
-
-    def classify_growth_switch(self, min_attain=.9, max_attain=.3):
-        # eval all true
-        alpha_range = (self.alpha_ub - self.alpha_lb)
-        alpha_range_narrow = (((alpha_range < 0.15) and (self.alpha_ub < 3)) or # circumvent precision <2 in subsequent evaluation
-                                ((alpha_range < .3) and (5<self.alpha_lb<10)) or
-                                ((alpha_range < 1.3) and (self.alpha_lb > 10)))
-        alpha_range_req =  (alpha_range_narrow # 
-                            and (self.alpha_lb > 1.01)) # ever update lb and ub
-        
-        obj_req = (not any(0.3 < val < 0.8 for val in self.trace_obj_val) and # mrdA forever > 1 for low dose
-                    (min(self.trace_obj_val) < min_attain) and 
-                    (max(self.trace_obj_val) > max_attain))
-        
-        if alpha_range_narrow and all(val >1 for val in self.trace_obj_val): # small dose all > Normal
-            obj_req = True
-                
-        # ? req more evalluation for alpha inside the bound?
-        self.is_growth_switch = (alpha_range_req and obj_req) or (self.alpha_ub < 1.018)
-        return self.is_growth_switch
+        return full_df 
     
     def out_opt_alpha_table(self):
         result = {}
         for i in range(len(self.trace_obj_val)):
-            result[f'iter_{i+1}'] = {'obj_val': self.trace_obj_val[i], 'alpha_table': self.trace_alpha_table[i]}
+            result[f'iter_{i+1}'] = {'obj_val': self.trace_obj_val[i], 'alpha_table': self.trace_alpha[i]}
         
         biomass_df = pd.concat(self.trace_biomass, axis=1) if self.trace_biomass else pd.DataFrame()
         return biomass_df, self.opt_alpha_table, {self.current_gene : result}
 #         return 'Temp Done' if (n_iter<=10 or n_iter ==2) else 'end at: '+ str(n_iter)
+
+##--------Perform Coculture Secrch---------##
 
 def coculture_search_job(**kwargs):    
     AF = CocultureAlphaFinder(**kwargs)
@@ -583,7 +589,6 @@ def run_coculture_search_mp(potential_genes, filename, n_processor, **kwargs):
     opt_alpha.columns = rename_columns(opt_alpha)
     opt_alpha.to_csv(f'./Data/alpha_table_{filename}.csv')
     print(opt_alpha, result_dict_list)
-    
     
     trace_dict = {k: v for d in result_dict_list for k, v in d.items()}
     with open(f"./Data/trace_record_{filename}.json", "w") as outfile: 

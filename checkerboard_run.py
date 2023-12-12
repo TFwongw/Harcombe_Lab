@@ -17,7 +17,7 @@ alpha_table = pd.read_csv('./Data/checkerboard_alpha_table.csv', index_col = 0)
 first_n = None
 mono=True
 
-E0, S0, all_components = load_models()
+E0, S0, all_components = load_models(Egal_reuptake=False)
 
 p = c.params()
 p.set_param("defaultKm", 0.00001) # M 

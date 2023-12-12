@@ -24,13 +24,19 @@ import logging
 import multiprocessing
 from functools import partial
 
-no_monoculture=2 
 initial_pop = 1e-8
 log_step = 5
 current_gene = 'thrC'
 precision = 2
 n_processor = 10
-E0, S0, all_components, media, alpha_table = None, None, None, None, None
+
+if 'E0' in globals():
+    # Code to execute if variable exists
+    print("Variable exists, keep E0, S0")
+else:
+    # Code to execute if variable 'a' does not exist
+    print('initialize E0, S0')
+    E0, S0, all_components, media, alpha_table = None, None, None, None, None
 
 p = c.params()
 p.set_param("defaultKm", 0.00001) # M 
@@ -50,7 +56,7 @@ p.set_param('writeMediaLog', True)
 # !unset PYTHONSTARTUP
 # os.environ["GRB_LICENSE_FILE"]="/common/software/install/migrated/gurobi/license/gurobi.lic"
 
-def load_models():
+def load_models(Egal_reuptake=True):
     def get_all_components():
         all_metabolites = {
             model.id: model.metabolites for model in [E0, S0]
@@ -73,6 +79,11 @@ def load_models():
     E0 = cobra.io.read_sbml_model("./models/iML1515_E0.xml")
     S0 = cobra.io.read_sbml_model("./models/STM_v1_0_S0.xml")
     E0.id, S0.id = 'E0', 'S0'
+    
+    # galactose reuptake in Diauxic environment result in disturbance in growth rate estimate after lcts being used up
+    if Egal_reuptake == False:
+        E0.reactions.GALtex.upper_bound = 0
+        E0.reactions.ACtex.upper_bound = 0
 
     # alpha_table = pd.read_csv('./Data/alpha_table.csv',index_col=0)
 
@@ -99,12 +110,11 @@ def load_models():
     E0.medium = nutrient_medium 
     S0.medium = nutrient_medium 
 
-    c_limiting_conc = 1
-    met_limiting_conc = 0.08
+    c_limiting_conc = 10 # corresponding to maximum uptake rate in carbon limited batch culture
+    met_limiting_conc = 0.08 # DO not search momoculture alpha with met_limitng_conc
 
     change_medium(E0, ['EX_lcts_e', 'EX_met__L_e'], [c_limiting_conc , 10], True)
-    # change_medium(E0, ['EX_lcts_e', 'EX_met__L_e'], [10 , met_limiting_conc], True)
-    change_medium(S0, 'EX_gal_e', c_limiting_conc*2, True)
+    change_medium(S0, 'EX_gal_e', c_limiting_conc, True)
     return E0, S0, get_all_components()
 
 def change_medium(model, metabolite, value, return_medium=False): # function for setting medium metabolite value
@@ -314,7 +324,7 @@ def iter_species(models,f,*args,**kwargs):
     return(r_object) 
 
 def get_alpha_steps(SG, steps=np.arange(0.2,2,0.2)):
-    result_df = pd.DataFrame([])
+    result_df = pd.DataFrame()
     for scaling in steps:
         temp_df = alpha_table.loc[[SG]]*scaling
         temp_df.index = temp_df.index + f'_{round(scaling,3)}'
@@ -413,15 +423,15 @@ def extract_dfs_from_sim_object(sim_object):
         
 # unpack_output_object
 def extract_dfs(mono_sims, co_sim):
-    out_dict = extract_dfs_from_sim_object(co_sim)
+    out_dict = extract_dfs_from_sim_object(co_sim) if co_sim else dict() # initialize out_dict from coculture if have co_sim object 
     if mono_sims:
         for sim_object in mono_sims[0]:
             out_dict.update(extract_dfs_from_sim_object(sim_object))
-    out_dict = {k: v.to_json() for k,v in out_dict.items()}
+    out_dict = {k: v.to_dict() for k,v in out_dict.items()}
     return out_dict
 
-def get_BM_df(current_gene, n_dir, alpha_table, mono=True, p=p, checker_suffix=None, E0=None, S0=None,return_sim=False, 
-              ko=False, carbon_source_val=5e-3, add_nutrient_val=[100], initial_pop=initial_pop, obj_style='MAX_OBJECTIVE_MIN_TOTAL'):
+def get_BM_df(current_gene, n_dir, alpha_table, co=True, mono=True, mono_S=True, p=p, checker_suffix=None, E0=None, S0=None,return_sim=False, 
+              ko=False, carbon_source_val=5e-3, add_nutrient_val=[100], initial_pop=initial_pop, obj_style='MAX_OBJECTIVE_MIN_TOTAL', no_monoculture=2):
     
 # def get_BM_df(genes, n_dir, alpha_table, mono=True, return_sim=False, ff=None,  ko=False):
     genes=convert_arg_to_list(current_gene)
@@ -440,12 +450,19 @@ def get_BM_df(current_gene, n_dir, alpha_table, mono=True, p=p, checker_suffix=N
         E_model,S_model = iter_species(M0, create_c, initial_pop=initial_pop, obj_style=obj_style) # create comet object with altered stiochiometry
         
         co_layout, *mono_layout = create_layout_object(E_model, S_model, carbon_source_val=carbon_source_val, add_nutrient_val=add_nutrient_val)
-        zip_arg = zip([E_model, S_model], mono_layout[:no_monoculture]) 
+
+        if co:
+            co_df, co_sim = sim_cultures([E_model, S_model], co_layout, base=base, p=p)
+            full_df = co_df.add_suffix(f'_{genes}_coculture')
+        else: 
+            co_df, co_sim = None, None
+            full_df = pd.DataFrame()
         
-        co_df, co_sim = sim_cultures([E_model, S_model], co_layout, base=base, p=p)
-        full_df = co_df.add_suffix(f'_{genes}_coculture')
         if mono:
-            mono_output = iter_species(zip_arg, sim_cultures, base=base)
+            if not mono_S:
+                no_monoculture = 1
+            zip_arg = zip([E_model, S_model], mono_layout[:no_monoculture]) 
+            mono_output = iter_species(zip_arg, sim_cultures, base=base, p=p)
             mono_df, mono_sim = unpack_output_object(mono_output) 
             for new_df in mono_df:
                 full_df = pd.concat([full_df, new_df.add_suffix(f'_{genes}_monoculture')],axis=1)
@@ -462,6 +479,7 @@ def get_BM_df(current_gene, n_dir, alpha_table, mono=True, p=p, checker_suffix=N
             genes_str = genes_str + checker_suffix
         
         out_dict.update( {'Gene_inhibition': genes_str}) # for DG
+        print(genes_str)
         
         full_df.columns = rename_columns(full_df)
         # print(full_df.columns)
@@ -477,7 +495,7 @@ def rename_columns(df):
     return(df.columns)
     
 def gene_index_culture_col_df(analysis_df): 
-    analysis_df['Gene_inhibition'] =  ['.'.join(map(str, l)) for l in analysis_df.Gene_inhibition]
+    analysis_df['Gene_inhibition'] =  ['.'.join(map(str, convert_arg_to_list(l))) for l in analysis_df.Gene_inhibition] # SG, DG, checkerboard g1.g2 form
     analysis_df = analysis_df.set_index('Gene_inhibition')
     return analysis_df
 

@@ -24,16 +24,34 @@ no_monoculture=2
 initial_pop = 1e-8 # initial biomass in comets simulation
 n_combos = 50 # first n gene combo 
 n_processor = 17 # number of process run in parallel
+carbon_source_val = .05
+mono = True, 
+mono_S = True,
+mono_S = False, 
+co = True
+test = False
 
-E0, S0, all_components = load_models()
+# mono = True
+# mono_S = False
+# co = False
+# test = True
+
+E0, S0, all_components = load_models(Egal_reuptake=False)
 
 p = c.params()
 p.set_param("defaultKm", 0.00001) # M 
 p.set_param("defaultVmax", 10) #mmol/gDw/hr
-p.set_param("maxCycles", 450)
+# p.set_param("maxCycles", 450)
+p.set_param("maxCycles", 80)
 p.set_param("timeStep", 1) 
 p.set_param('writeFluxLog', True)
 p.set_param('writeMediaLog', True)
+# p.set_param('FluxLogRate', 1)
+# p.set_param('MediaLogRate', 1)
+
+obj_style = 'MAX_OBJECTIVE_MIN_TOTAL'
+# obj_style = 'MAXIMIZE_OBJECTIVE_FLUX'
+
 
 # alpha table keep E0, S0 column only
 '''
@@ -45,11 +63,13 @@ alpha_table = pd.read_csv('./Data/checker_alpha_table.csv', index_col = 0)
 '''
 
 file_list = ['alpha_table_m1', 'alpha_table_m2', 'alpha_table_m3']
-# file_list = ['alpha_table_m1', 'alpha_table_m3']
+# file_list = ['alpha_table_m1', 'alpha_table_m2']
+file_list = ['alpha_table_m1']
 
 # def generate_csv(gene_combos: list, filename: str, alpha_table, mono=True):
-def generate_csv(gene_combos: list, filename: str, **kwargs):
+def generate_csv(gene_combos: list, filename: str, test=False, **kwargs):
     
+    test_suffix = '_test' if test else ''
     # Multiprocessing double gene
     result_list = list()
      
@@ -64,11 +84,11 @@ def generate_csv(gene_combos: list, filename: str, **kwargs):
     #     result_df_list, result_dict_list = zip(*pool.starmap(get_BM_df, zipped_arg)) 
     result_df = pd.concat(result_df_list,axis = 1)
     result_df.columns = rename_columns(result_df)
-    result_df.to_csv(f'./Data/{filename}.csv')
+    result_df.to_csv(f'./Data/{filename+test_suffix}.csv')
     
     # TODO: bypass DataFrame construction, write json directly
     analysis_df = gene_index_culture_col_df(pd.DataFrame(result_dict_list))
-    analysis_df.to_json(f"./Data/flanalysis_{filename}.json") 
+    analysis_df.to_json(f"./Data/flanalysis_{filename+test_suffix}.json") 
 
     return result_df, analysis_df 
 
@@ -84,12 +104,17 @@ if __name__ == "__main__":
     gene_combos = list(ast.literal_eval(ele) for ele in gene_combos)
     
     kwargs = {'alpha_table': None, 
-                'mono': True, 
+                'mono': mono, 
+                'mono_S': mono_S, 
+                'co' : co, 
                 'p': p,
                 'E0': E0, 
                 'S0': S0,
                 'return_sim': False, 
-                'ko': False}
+                'ko': False,
+                'obj_style' : obj_style,
+                'carbon_source_val': carbon_source_val
+    }
     
     for filename in file_list: 
         alpha_table = pd.read_csv(f'./Data/{filename}.csv', index_col=0) 
@@ -97,12 +122,18 @@ if __name__ == "__main__":
         gene50 = list(alpha_table.index)
         gene50.extend(['Normal'])
         
+        # gene50 = ['argD', 'gnd', 'talB', 'dadX', 'Normal']
+        # gene50 = ['dadX', 'Normal']
+        
         if '_m2' in filename:
             alpha_table.iloc[:, :2] = alpha_table.iloc[:, :2].where(alpha_table.iloc[:, :2] <= 5e3, 1e5) # reset to 1e5 for nonessential genes
         
         method_n = filename.split('_')[-1]
-        SGresult_df, SGanalysis_df  = generate_csv(gene50, f'BM_SG_{method_n}', **kwargs)
-        DGresult_df, DGanalysis_df  =  generate_csv(gene_combos, f'BM_DG_{method_n}', **kwargs) 
+        if obj_style == 'MAXIMIZE_OBJECTIVE_FLUX':
+            method_n = method_n + '_MAXBM'
+        
+        SGresult_df, SGanalysis_df  = generate_csv(gene50, f'BM_SG_{method_n}', test=test, **kwargs)
+        DGresult_df, DGanalysis_df  =  generate_csv(gene_combos, f'BM_DG_{method_n}', test=test, **kwargs) 
     
     end = time() 
     print('Time Elapsed: ', end-start)
