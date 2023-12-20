@@ -23,6 +23,7 @@ import json
 import logging
 import multiprocessing
 from functools import partial
+import copy
 
 initial_pop = 1e-8
 log_step = 5
@@ -195,7 +196,7 @@ def search_gr_cycle_with_biomass(df_search, biomass_values):
 
 def get_maximum_growth_cycle(desired_BM, scale_diff=0.1):
     c_max_gr = desired_BM.iloc[1]+ (desired_BM.iloc[-1] - desired_BM.iloc[1])/2
-    bool_growing = ((desired_BM.iloc[-1]-desired_BM.iloc[-5])/desired_BM.iloc[-1]).apply(lambda x: x > 1e-10)
+    bool_growing = ((desired_BM.iloc[-1]-desired_BM.iloc[-5])/desired_BM.iloc[-1]).apply(lambda x: bool(x > 1e-10))
     for k, bool_grow in bool_growing.items():
         if bool_grow:
             c_max_gr[k] = desired_BM[k].iloc[-6]
@@ -235,12 +236,11 @@ def get_desired_cycle(Biomass_df, log_step=5, scale_diff=0.1):
 #     .query('culture=="coculture"')
     
     if len(desired_cycle.Gene_inhibition.unique()) >1 or len(desired_cycle)<2:
-
-        desired_cycle = desired_cycle.set_index('Gene_inhibition')[['cycle_max_gr', 'bool_growing', 'growth_phase','growth_phase_length', 'Species','culture','end_cycle']]
+        desired_cycle = desired_cycle.set_index('Gene_inhibition')
     else:
         desired_cycle.index = ['_'.join([x[1],x[3]]) for x in desired_cycle.index.str.split('_')]
         desired_cycle.Gene_inhibition = desired_cycle.index
-
+    # print(desired_cycle.columns)
     return desired_cycle   
 
 def create_common_media(Species, carbon_source = "lcts_e", carbon_source_val = 5e-3, 
@@ -284,7 +284,7 @@ def sim_cultures(model, layout, p=p, base = None, genes=''): # non_functional ar
     if type(layout) is list:
         layout = layout[0] # layout object stored inside list of one element unpacking from iter_species
     
-    sim = c.comets(layout, p)    
+    sim = c.comets(layout, p) 
     sim.working_dir = base
     print(sim.working_dir)
     
@@ -393,14 +393,14 @@ def alter_Sij(model, alphas = 1, genes = 'folA', ko=False):
                 rct_ids.extend(separate_reaction(model, rct.id, alpha))# copy of reaction, forward_terminal_change = True
     return(rct_ids) 
 
-def create_layout_object(E_model, S_model, carbon_source_val=5e-3, add_nutrient_val=[100]):
+def create_layout_object(E_model, S_model, carbon_source_val=5e-3, add_nutrient_val=[100], co=True, mono=True, mono_S=True):
     add_nutrient_val = convert_arg_to_list(add_nutrient_val)
     partial_create_common_media = partial(create_common_media, carbon_source_val=carbon_source_val, add_nutrient_val=add_nutrient_val)
     
-    co_layout = partial_create_common_media([E_model, S_model], carbon_source='lcts_e')
-    E0_layout = partial_create_common_media([E_model], carbon_source='lcts_e', add_nutrient='met__L_e')
-    # S0_ac_layout = partial_create_common_media([S_model], carbon_source='ac_e')
-    S0_gal_layout = create_common_media([S_model], carbon_source='gal_e')
+    co_layout = partial_create_common_media([E_model, S_model], carbon_source='lcts_e') if co else None
+    E0_layout = partial_create_common_media([E_model], carbon_source='lcts_e', add_nutrient='met__L_e') if mono else None
+    # S0_ac_layout = partial_create_common_media([S_model], carbon_source='ac_e') 
+    S0_gal_layout = create_common_media([S_model], carbon_source='gal_e') if mono_S else None
     # return [co_layout, E0_layout, S0_ac_layout, S0_glc_layout]
     return [co_layout, E0_layout, S0_gal_layout]
 
@@ -434,12 +434,19 @@ def get_BM_df(current_gene, n_dir, alpha_table, co=True, mono=True, mono_S=True,
               ko=False, carbon_source_val=5e-3, add_nutrient_val=[100], initial_pop=initial_pop, obj_style='MAX_OBJECTIVE_MIN_TOTAL', no_monoculture=2):
     
 # def get_BM_df(genes, n_dir, alpha_table, mono=True, return_sim=False, ff=None,  ko=False):
+    def get_p_short(p):
+        p_short = copy.deepcopy(p)
+        if p.get_param("maxCycles") > 200:
+            p_short.set_param("maxCycles", 200) 
+        return p_short
+    
     genes=convert_arg_to_list(current_gene)
     # print(genes)
     base = f"/panfs/jay/groups/0/harcombe/wong0755/comets_RPS/rep_{n_dir}/"
     # base = f"../comets_RPS/rep_{n_dir}/"
     if not os.path.exists(base):
-        os.mkdir(base) 
+        os.mkdir(base)  
+        
     with E0 as m_E0, S0 as m_S0:
         M0 = [m_E0, m_S0] 
         if not ('Normal' in genes):
@@ -449,7 +456,7 @@ def get_BM_df(current_gene, n_dir, alpha_table, co=True, mono=True, mono_S=True,
     
         E_model,S_model = iter_species(M0, create_c, initial_pop=initial_pop, obj_style=obj_style) # create comet object with altered stiochiometry
         
-        co_layout, *mono_layout = create_layout_object(E_model, S_model, carbon_source_val=carbon_source_val, add_nutrient_val=add_nutrient_val)
+        co_layout, *mono_layout = create_layout_object(E_model, S_model, carbon_source_val=carbon_source_val, add_nutrient_val=add_nutrient_val, co=co, mono=mono, mono_S=mono_S)
 
         if co:
             co_df, co_sim = sim_cultures([E_model, S_model], co_layout, base=base, p=p)
@@ -458,19 +465,20 @@ def get_BM_df(current_gene, n_dir, alpha_table, co=True, mono=True, mono_S=True,
             co_df, co_sim = None, None
             full_df = pd.DataFrame()
         
-        if mono:
-            if not mono_S:
+        if mono: 
+            if mono_S is False:
                 no_monoculture = 1
-            zip_arg = zip([E_model, S_model], mono_layout[:no_monoculture]) 
-            mono_output = iter_species(zip_arg, sim_cultures, base=base, p=p)
+            zip_arg = zip([E_model, S_model], mono_layout[:no_monoculture]) # only E_model layout if mono_S is False
+            
+            # change maxCycle of param for monoculture to 200
+            p_short = get_p_short(p) if len(current_gene) == 1 else p # only single gene inhibition 
+            mono_output = iter_species(zip_arg, sim_cultures, base=base, p=p_short)
             mono_df, mono_sim = unpack_output_object(mono_output) 
             for new_df in mono_df:
                 full_df = pd.concat([full_df, new_df.add_suffix(f'_{genes}_monoculture')],axis=1)
             out_dict = extract_dfs(mono_sim, co_sim)
         else:
-            out_dict = extract_dfs(None, co_sim)
-        
-        # --check change effect
+            out_dict = extract_dfs(None, co_sim) 
         genes_str = '.'.join(genes)
         
         # adjust for checker board
