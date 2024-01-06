@@ -25,28 +25,42 @@ no_monoculture=2
 initial_pop = 1e-8 # initial biomass in comets simulation
 n_combos = 50 # first n gene combo 
 n_processor = 10 # number of process run in parallel
-carbon_source_val = .05
+carbon_source_val = .1
 mono = True
 mono_S = True
 co = True
 test = False
 
-# mono = True
+# mono = False
 # mono_S = False
 # co = False
-test = True
+# test = True
 
-E0, S0, all_components = load_models(Egal_reuptake=False)
+load_model_kwargs = { 
+                # 'gal_scale': 3,
+                'gal_scale': 3,
+                'ac_scale': 10,
+                # 'co2_scale': None,
+                # 'co2_scale': 2,
+                # 'co_met':[0],
+                # 'ACtex_ub': -2,
+                # 'LCTStex_lb': 0 # EX_ac negative, tex positive lb to force
+                # 'cpath_scale' : 10,
+                'w': True
+}
+
+E0, S0, all_components = load_models(Egal_reuptake=False, **load_model_kwargs)
 
 p = c.params()
 p.set_param("defaultKm", 0.00001) # M 
 p.set_param("defaultVmax", 10) #mmol/gDw/hr
-p.set_param("maxCycles", 450)
-# p.set_param("maxCycles", 50)
+p.set_param("maxCycles", 550)
+p.set_param("maxCycles", 300)
+# p.set_param("maxCycles", 150)
 p.set_param("timeStep", 1) 
 p.set_param('writeFluxLog', True)
 p.set_param('writeMediaLog', True)
-# p.set_param('FluxLogRate', 1)
+p.set_param('FluxLogRate', 5)
 # p.set_param('MediaLogRate', 1)
 
 obj_style = 'MAX_OBJECTIVE_MIN_TOTAL'
@@ -63,8 +77,10 @@ alpha_table = pd.read_csv('./Data/checker_alpha_table.csv', index_col = 0)
 '''
 
 file_list = ['alpha_table_m1', 'alpha_table_m2', 'alpha_table_m3']
-file_list = ['alpha_table_m2', 'alpha_table_m3']
-file_list = ['alpha_table_m1']
+file_list = ['alpha_table_m1', 'alpha_table_m2']
+# file_list = ['alpha_table_m41', 'alpha_table_m42']
+# file_list = ['alpha_table_m42']
+file_list = ['alpha_table_m2']
 
 # def generate_csv(gene_combos: list, filename: str, alpha_table, mono=True):
 def generate_csv(gene_combos: list, filename: str, test=False, **kwargs):
@@ -94,10 +110,12 @@ def generate_csv(gene_combos: list, filename: str, test=False, **kwargs):
 
 def SG_diff_alpha(alpha_table): # single genes with different alpha compared to alpha_table_m1(mostly nonessential)
     alpha_table_m1 = pd.read_csv(f'./Data/alpha_table_m1.csv', index_col=0)
+    if len(alpha_table) < len(alpha_table_m1):
+        return list(), set()
     TF_df = alpha_table_m1 == alpha_table
     TF_df['product'] = TF_df.apply(lambda x: x['E0'] * x['S0'], axis=1)
     return list(TF_df.query('product == False').index), set(TF_df.query('product == True').index)
-
+    
 def fill_skipped(method_list=['m2','m3'], XG_list=['SG','DG'], test=True):
     def fill_skipped_cols(df_need_filled, df_m1):
         overlap_cols = df_m1.columns.difference(df_need_filled.columns)
@@ -139,7 +157,9 @@ if __name__ == "__main__":
                 'return_sim': False, 
                 'ko': False,
                 'obj_style' : obj_style,
-                'carbon_source_val': carbon_source_val
+                'carbon_source_val': carbon_source_val,
+                # 'Smono_carbon_source': 'gal_e',
+                'Smono_carbon_source': 'bulk_ac_e'
     }
     
     for filename in file_list: 
@@ -152,6 +172,7 @@ if __name__ == "__main__":
         kwargs['alpha_table'] = alpha_table
         
         if '_m1' not in filename:
+            # SG=list()
             SG, repeated_SG = SG_diff_alpha(alpha_table)
             DG_sim = DG_diff_alpha(DG, repeated_SG)
         else:
@@ -161,15 +182,15 @@ if __name__ == "__main__":
         
         # SG = ['argD', 'gnd', 'talB', 'dadX', 'Normal']
         # SG = gene50[:10]
+        # SG = ['Normal']
+        # SG = ['folP']
         
         if obj_style == 'MAXIMIZE_OBJECTIVE_FLUX':
-            method_n = method_n + '_MAXBM'
+            method_n = method_n + '_MAXBM' 
         
-        DG_sim = [('serC','dapD')]
-        
-        # SGresult_df, SGanalysis_df  = generate_csv(SG, f'BM_SG_{method_n}', test=test, **kwargs)
+        SGresult_df, SGanalysis_df  = generate_csv(SG, f'BM_SG_{method_n}', test=test, **kwargs)
         DGresult_df, DGanalysis_df  = generate_csv(DG_sim, f'BM_DG_{method_n}', test=test, **kwargs) 
-        # fill_skipped(method_list=[method_n], test=test)
+        fill_skipped(method_list=[method_n], test=test)
     
     end = time() 
     print('Time Elapsed: ', end-start)

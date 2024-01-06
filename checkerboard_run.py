@@ -17,16 +17,29 @@ alpha_table = pd.read_csv('./Data/checkerboard_alpha_table.csv', index_col = 0)
 first_n = None
 mono=True
 
-E0, S0, all_components = load_models(Egal_reuptake=False)
+load_model_kwargs = { 
+                # 'gal_scale': 3,
+                'gal_scale': 3,
+                'ac_scale': 10,
+                # 'co2_scale': None,
+                # 'co2_scale': 2,
+                # 'co_met':[0],
+                # 'ACtex_ub': -2,
+                # 'LCTStex_lb': 0 # EX_ac negative, tex positive lb to force
+                # 'cpath_scale' : 10,
+                'w': True}
+
+E0, S0, all_components = load_models(Egal_reuptake=False, **load_model_kwargs)
 
 p = c.params()
 p.set_param("defaultKm", 0.00001) # M 
 p.set_param("defaultVmax", 10) #mmol/gDw/hr
-# p.set_param("maxCycles", 30)
-p.set_param("maxCycles", 1250)
+p.set_param("maxCycles", 550)
+# p.set_param("maxCycles", 150)
 p.set_param("timeStep", 1) 
 p.set_param('writeFluxLog', True)
 p.set_param('writeMediaLog', True)
+p.set_param('FluxLogRate', 5)
 
 def checkerboard_simulation(gene_combo: tuple, alpha_table, filename='BM_checkerboard', mono=True, **kwargs):
     def convert_checker_alpha_table_to_dict(checker_alpha_table): # alpha table keys as append ''.join(['_'+ str(ele) for ele in _i_j as suffix 
