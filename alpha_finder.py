@@ -335,6 +335,7 @@ class CocultureAlphaFinder(AlphaFinderConfig): # scale normal & knockout to 1-0
     model: List 
     search_alpha : float
     current_gene : str
+    
     target_obj_val : float = 0.5 
     alpha_table : pd.DataFrame = None
     precision : int = 1 # precision of alpha
@@ -356,9 +357,9 @@ class CocultureAlphaFinder(AlphaFinderConfig): # scale normal & knockout to 1-0
     is_growth_switch = False
     initial_pop : float = 1e-8
     p : None = None
-    obj_style: str = 'MAX_OBJECTIVE_MIN_TOTAL'
-    # add_nutrient_val : float = field(default_factory=[.08])
+    obj_style: str 
     
+    # add_nutrient_val : float = field(default_factory=[.08])
     def __post_init__(self):
         super().__post_init__()
         print(self.exp_leap)
@@ -395,7 +396,7 @@ class CocultureAlphaFinder(AlphaFinderConfig): # scale normal & knockout to 1-0
         
         # alpha_in_table = self.alpha_table.loc[self.current_gene, self.E0.id] # E0 col
         full_df, *_ =  get_BM_df(self.current_gene,n_dir=self.n_dir,alpha_table=self.alpha_table,
-                                E0=self.E0, S0=self.S0, mono=False, p=p, return_sim=True, ko=True, 
+                                E0=self.E0, S0=self.S0, mono=False, p=self.p, return_sim=True, ko=True, 
                                 carbon_source_val=self.carbon_source_val, add_nutrient_val=self.add_nutrient_val,
                                 initial_pop=self.initial_pop, obj_style=self.obj_style)
         
@@ -456,39 +457,50 @@ class CocultureAlphaFinder(AlphaFinderConfig): # scale normal & knockout to 1-0
         return nxt_alpha_table
      
     def cal_fitted_gr(self, coculture_biomass_df):
-        def logistic(x, saturation, growth_rate, inflection_point, initial_pop):
-            return (saturation / (1 + np.exp(-growth_rate * (x - inflection_point)))) + initial_pop
+        # def logistic(x, saturation, growth_rate, inflection_point, initial_pop):
+        #     return (saturation / (1 + np.exp(-growth_rate * (x - inflection_point)))) + initial_pop
         
-        x = coculture_biomass_df.index
-        y = coculture_biomass_df.iloc[:, 0] # E0 column
-        # y = coculture_biomass_df # E0 column
-        if (float(y.tail(1)) < float(y.head(1))+5e-8):
+        def np_loglinear(s: pd.Series):
+            np_gr, est_initial_pop = np.polyfit(s.index, np.log(s), 1) # [B,A] -- log(y) = A+Bx
+            return np_gr
+            
+        def truncate_max_biomass(fit_col):
+            cycles_to_fit = fit_col<fit_col.iloc[-1]*.9
+            return pd.Series(fit_col.loc[cycles_to_fit])
+        
+        # x = coculture_biomass_df.index
+        y = truncate_max_biomass(coculture_biomass_df.iloc[:, 0]) # E0 column
+        
+        print(self.current_gene, y.tail(1), y.head(1), 'to convert to float')
+        if len(y) < 5 or (float(y.tail(1)) < float(y.head(1))+5e-8): #intercept minimal growth
             growth_rate = 0
             return growth_rate
             
-        desired_cycle = get_desired_cycle(coculture_biomass_df, scale_diff=0.05) 
+        # desired_cycle = get_desired_cycle(coculture_biomass_df, scale_diff=0.05) 
         
-        growth_phase = desired_cycle.loc[self.current_gene, 'growth_phase']
-        bool_growing = desired_cycle.loc[self.current_gene, 'bool_growing']
-        c_max_gr = desired_cycle.loc[self.current_gene, 'c_max_gr']
-        saturation = float(coculture_biomass_df.loc[growth_phase[1]])
-        init_gr = .23
-        p0 = [saturation, init_gr, c_max_gr, self.initial_pop]
+        # growth_phase = desired_cycle.loc[self.current_gene, 'growth_phase']
+        # bool_growing = desired_cycle.loc[self.current_gene, 'bool_growing']
+        # c_max_gr = desired_cycle.loc[self.current_gene, 'c_max_gr']
+        # saturation = float(coculture_biomass_df.loc[growth_phase[1]])
+        # init_gr = .23
+        # p0 = [saturation, init_gr, c_max_gr, self.initial_pop]
 
-        print('growing: ',bool_growing)
-        if (bool_growing == False) or (bool_growing <1):
-            popt, pcov = curve_fit(logistic, x, y, p0=p0)
-            print('logi')
+        # print('growing: ',bool_growing)
+        # if (bool_growing == False) or (bool_growing <1):
+        #     popt, pcov = curve_fit(logistic, x, y, p0=p0)
+        #     print('logi')
             
-            if self.current_gene =='Normal':
-                print(popt)
-            growth_rate = popt[1]
-        else:
-            print('lolin')
-            popt, pcov = np.polyfit(x, np.log(y), 1) # [B,A] -- log(y) = A+Bx
-            growth_rate = popt
-        if self.current_gene == 'Normal':
-            print('popt', popt)
+        #     if self.current_gene =='Normal':
+        #         print(popt)
+        #     growth_rate = popt[1]
+        # else:
+        #     print('lolin')
+        #     popt, pcov = np.polyfit(x, np.log(y), 1) # [B,A] -- log(y) = A+Bx
+        #     growth_rate = popt
+        # if self.current_gene == 'Normal':
+        #     print('popt', popt)
+        growth_rate = np_loglinear(y)
+         
         return growth_rate
         
     def cal_std_gr(self, coculture_biomass_df, gr_Normal):
@@ -512,8 +524,9 @@ class CocultureAlphaFinder(AlphaFinderConfig): # scale normal & knockout to 1-0
         nxt_alpha_table = self.generate_next_fixed_ratio_table()
         # self.trace_alpha_table.append(nxt_alpha_table.to_dict())
 
+        print(self.p.all_params['maxCycles'])
         full_df, out_dict, co_sim = get_BM_df(self.current_gene,n_dir=self.n_dir,alpha_table=self.nxt_alpha_table,
-                                E0=self.E0, S0=self.S0, mono=False, p=p, return_sim=True, ko=False, 
+                                E0=self.E0, S0=self.S0, mono=False, p=self.p, return_sim=True, ko=False, 
                                 carbon_source_val=self.carbon_source_val, add_nutrient_val=self.add_nutrient_val,
                                 initial_pop=self.initial_pop, obj_style=self.obj_style)
         # get_BM_df(self.current_gene,n_dir=self.n_dir,alpha_table=nxt_alpha_table,mono=False, return_sim=True)
@@ -564,7 +577,6 @@ class CocultureAlphaFinder(AlphaFinderConfig): # scale normal & knockout to 1-0
         nxt_alpha_table.index.name='Gene_inhibition'
         self.trace_alpha.append(nxt_alpha_table.to_dict())
         
-        
         if obj_req or (self.opt_df is None) or self.converge_alpha: # store only qualified alpha
             # if self.opt_df is not None: # do not append the first 
             #     pass
@@ -594,7 +606,7 @@ class CocultureAlphaFinder(AlphaFinderConfig): # scale normal & knockout to 1-0
 
 ##--------Perform Coculture Secrch---------##
 
-def coculture_search_job(**kwargs):    
+def coculture_search_job(**kwargs):     
     AF = CocultureAlphaFinder(**kwargs)
     # return pd.DataFrame([]), {0:{0:0}}
     AF.calculate_gr_ko()
@@ -605,7 +617,7 @@ def run_coculture_search_mp(potential_genes, filename, n_processor, **kwargs):
         trace_biomass = pd.concat(trace_biomass,axis=1) # alpha_table
         trace_biomass.columns = rename_columns(trace_biomass)
         trace_biomass.to_csv(f'./Data/biomass_{filename}.csv')
-    
+     
     result_list = list()
      
     with concurrent.futures.ProcessPoolExecutor(n_processor) as executor:
