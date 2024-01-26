@@ -1,5 +1,4 @@
-from setup import (load_models,
-                   convert_arg_to_list,
+from setup import (convert_arg_to_list,
                    get_gene_id,
                    remove_Zero_col)
 from dataclasses import dataclass, field
@@ -8,8 +7,7 @@ import pandas as pd
 import cobra
 import itertools
 import re
-import json
-import ast
+import json 
 import numpy as np
 # from growth_summary import (get_maximum_growth_cycle)
 
@@ -24,13 +22,14 @@ def get_rcts_list(model, gcomb_list):
         rcts_set = rcts_set | set(gene_rcts)
     return rcts_list
 
-def adjust_flux_df(model, df, gene_combo: list, alpha_table:pd.DataFrame): 
+def adjust_flux_df(model, df, gene_combo: list, alpha_table:pd.DataFrame, is_checkerboard): 
     # Don't use v1 cols to indicate gene_inhibition, will skip unidirectional reaction
     def query_alpha(gene_combo, alpha_table):
         splitted = gene_combo.split('.')
-        if len(splitted) == 2:
+        print(splitted)
+        if len(splitted) <= 2:
             gcomb_alpha = {gene: alpha_table.loc[gene, f'{model.id}'] for gene in gene_combo.split('.')}
-            # return gcomb_alpha
+            return gcomb_alpha, alpha_table
 
         # alphas
         splitted = gene_combo.split('_')
@@ -46,7 +45,6 @@ def adjust_flux_df(model, df, gene_combo: list, alpha_table:pd.DataFrame):
         return gcomb_alpha, alpha_table
 
     print(gene_combo)
-
 
     if 'Normal' not in gene_combo:
 #         gene_combo_dict = get_gcomb_alpha_dict(gene_combo) 
@@ -74,7 +72,6 @@ def adjust_flux_df(model, df, gene_combo: list, alpha_table:pd.DataFrame):
     return df
 
 def get_XG_cycle_from(desired_cycle):
-
     if len(desired_cycle.index[-1].split('.')) <=2:
         SG_cycle = desired_cycle.loc[[len(ele.split('.')) ==1 for ele in desired_cycle.index]]
         DG_cycle = desired_cycle.loc[[len(ele.split('.')) ==2 for ele in desired_cycle.index]]
@@ -123,12 +120,10 @@ def join_dfs_using_MI(df_list, how='left', multi_index = None):
         result_df = result_df.join(df, how=how)
     return result_df
 
-
 all_culture_items = ['coculture_media', 'E0_coculture_flux', 'S0_coculture_flux', 'E0_monoculture_media', 'E0_monoculture_flux', 'S0_monoculture_media', 'S0_monoculture_flux']
 def get_desired_keys(culture_options, item_options, all_culture_items=all_culture_items):
     culture_options, item_options = '|'.join(culture_options), '|'.join(item_options)
-    search_str = re.compile(f'{culture_options}.*[{item_options}]')
-    desired_keys = [ele for ele in all_culture_items if re.search(search_str, ele)]
+    desired_keys = [ele for ele in all_culture_items if re.search(culture_options, ele) and re.search(item_options, ele)]
     return desired_keys
 
 
@@ -147,19 +142,36 @@ def retrive_specific_culture(file_list, culture_options, item_options, XG_df_lis
             out_dict['_'.join([outer_key, XG_df.index.name])] = {current_gene: file[outer_key][current_gene] for current_gene in XG_list}                                            
     return out_dict
 
-def get_alpha_to_merge(E0, S0, alpha_table): # TODO: check necessity- use in normal drug comb
-    def get_alpha(l: list[str, str], alpha_table):
-        l=l[0]
-    #     print(l)
-        Species = [E0.id, S0.id]
-        df = pd.DataFrame(alpha_table.loc[l, Species]).T
-        return df.values.tolist()
-    # a.apply(get_alpha, axis=1, result_type='broadcast')
+def get_alpha_wide(alpha_table):
+    return alpha_table.melt(value_vars=['E0', 'S0'], var_name='Species', value_name='alpha', ignore_index=False)
 
-    S = [ele for ele in alpha_table.columns if 'S0' in ele]
-    ES_cols = ['E0', S[0]]
+# def get_SG_DG(DG_list, explode=True):
+#     df = (pd.DataFrame(pd.DataFrame(2*[DG_list]
+#     , index=['Gene_inhibition','SG']).T
+#     ).set_index('Gene_inhibition'))
+#     return df.explode('SG') if explode else df
+
+def get_SG_DG(DG_list, explode=True):
+    df = pd.DataFrame(pd.DataFrame(2*[DG_list], index=['Gene_inhibition','SG']).T.set_index('Gene_inhibition').SG.str.split('.'))
+    return df.explode('SG') if explode else df
+
+def get_alpha_to_merge(alpha_table, DG_list): # TODO: check necessity- use in normal drug comb
+    # def get_alpha(l: list[str, str], alpha_table):
+    #     l=l[0]
+    #     df = pd.DataFrame(alpha_table.loc[l, ['E0', 'S0']]).T
+    #     return df.values.tolist()
+    def get_alpha(l: list[str, str], alpha_table):
+        if isinstance(l, pd.Series):
+            l=l.to_list()
+        l=l[0]
+        df = pd.DataFrame(alpha_table.loc[l, ['E0', 'S0']]).T
+        return df.values.tolist()
+
+
+    # S = [ele for ele in alpha_table.columns if 'S0' in ele]
+    ES_cols = ['E0', 'S0']
     alpha_wide = get_alpha_wide(alpha_table)
-    df = (get_SG_DG(explode=False)
+    df = (get_SG_DG(DG_list, explode=False)
           .apply(lambda x: pd.Series(get_alpha(x, alpha_table), index=ES_cols), axis=1) # df with E0 S0 alpha columns
           .melt(value_vars=ES_cols, var_name='Species', value_name='alpha', ignore_index=False)
           .combine_first(alpha_wide))
@@ -206,6 +218,7 @@ class FluxCompare:
     is_checkerboard :bool = False
     alpha_table :pd.DataFrame = None
     count = 0
+    DG_list : List = None
 
     def __post_init__(self):
         self.SG_cycle, self.DG_cycle = get_XG_cycle_from(self.desired_cycle)
@@ -234,8 +247,8 @@ class FluxCompare:
         self.flux_dict = out_dict
         return None
     
-    def get_flux_dict_per_culture_item(self, model, sub_flux_dict, culture_item, desired_cycle, log_step=globals().get('log_step', 5)): # desired_cycle as SG_cycle, DG_cycle
-        def get_flux_snapshot(s : pd.Series, no_grow, temp_flux_dict, culture):
+    def get_flux_dict_per_culture_item(self, model, sub_flux_dict, culture_item, desired_cycle, log_step=globals().get('log_step', 5), high_pass_cycle=450): # desired_cycle as SG_cycle, DG_cycle
+        def get_flux_snapshot(s : pd.Series, no_grow, temp_flux_dict, culture, cg):
             cycle=s[self.desired_cycle_col]
             current_gene_combo = s.name
             print(model.id, culture_item, self.count)
@@ -251,32 +264,35 @@ class FluxCompare:
                 is_flux = '_flux' in culture_item
 
                 if is_flux:
-                    df_from_js = adjust_flux_df(model, df_from_js, current_gene_combo,alpha_table=self.alpha_table).drop(['x','y'], axis=1)
+                    df_from_js = adjust_flux_df(model, df_from_js, current_gene_combo,alpha_table=self.alpha_table, is_checkerboard=self.is_checkerboard).drop(['x','y'], axis=1)
                         
                 else:
                     df_from_js = df_from_js.pivot(index=['cycle'],columns=['metabolite'], values='conc_mmol').reset_index()
                 growth_phase_summary = get_growth_phase_summary(model, culture, df_from_js, desired_cycle, current_gene_combo, is_flux=is_flux)
                 
+
                 invalid_snapshot, max_correction = True, 3
+                print()
                 while invalid_snapshot:
-                    print('cyc', cycle, 'mxc', max_correction, max_correction <= -1)
+                    print(cg ,'cyc', cycle, 'mxc', max_correction, max_correction <= -1)
                     temp_df = df_from_js.query("cycle == @cycle")
+ 
                     temp_df.index = [current_gene_combo]
                     temp_df = pd.concat([temp_df, growth_phase_summary], axis=1) # mean, sd for each reaction -> ncols*3
                     print('snap&m',float(abs(temp_df['EX_bulk_ac_e'])),float(abs(temp_df['EX_bulk_ac_e_mean'])))
-                    if np.isnan(temp_df['EX_bulk_ac_e_mean'][0]) or float(abs(temp_df['EX_bulk_ac_e'])) > float(abs(temp_df['EX_bulk_ac_e_mean']))*.7:
-                        invalid_snapshot = False
+                    if model.id == 'S0' or cycle>high_pass_cycle or np.isnan(temp_df['EX_bulk_ac_e_mean'][0]) or float(abs(temp_df['EX_bulk_ac_e'])) > float(abs(temp_df['EX_bulk_ac_e_mean']))*.7:
+                        invalid_snapshot = False # stop iter
                     else:
                         max_correction -= 1
                         cycle -= log_step                        
                         if max_correction <= -1 or cycle < 10:
-                            invalid_snapshot = True
+                            invalid_snapshot = False # stop iter
                             temp_df.loc[current_gene_combo, 'EX_bulk_ac_e'] = temp_df.loc[current_gene_combo, 'EX_bulk_ac_e_mean']
-                        
+
                 temp_flux_dict.update({current_gene_combo: temp_df}) 
-                
                 print(temp_flux_dict.keys())
-                return temp_flux_dict, no_grow
+            return temp_flux_dict, no_grow
+            
         temp_flux_dict, no_grow = dict(), list()
         culture = culture_item.split('_')[0]
         for current_gene_combo, cycle_row in (desired_cycle
@@ -284,7 +300,7 @@ class FluxCompare:
                                             #   .iloc[:1]
                                               .iterrows()):
             print(current_gene_combo,'currr')
-            temp_flux_dict, no_grow = get_flux_snapshot(cycle_row, no_grow, temp_flux_dict, culture)
+            temp_flux_dict, no_grow = get_flux_snapshot(cycle_row, no_grow, temp_flux_dict, culture, current_gene_combo)
             
         # print(temp_flux_dict)
         if no_grow:
@@ -322,9 +338,14 @@ class FluxCompare:
         flux_compare_df = remove_Zero_col(flux_compare_df)
     #     flux_compare_df = get_ESdiff(remove_Zero_col(flux_compare_df)) # ES diff 41 columns ?only common
     #     flux_compare_df = get_Ndiff(flux_compare_df)
+        self.flux_compare_df = flux_compare_df
+        
         if not self.is_checkerboard: #  alpha value not joined for checkerboard, SG format different 
-            flux_compare_df = join_dfs_using_MI(get_alpha_to_merge(self.alpha_table), flux_compare_df, how='right') # DG only
+            flux_compare_df = join_dfs_using_MI([get_alpha_to_merge(self.alpha_table, self.DG_list), flux_compare_df]
+                                                , how='right') # DG only
         else:
             flux_compare_df = modify_checkerboard_flux_compare_df(self.alpha_table, flux_compare_df)
         self.flux_compare_df = flux_compare_df
         return flux_compare_df
+    
+
